@@ -85,6 +85,8 @@ git commit -m "docs: validate specification with cold-start audit"
 
 ### Task 1: Project skeleton, configuration, and domain contracts
 
+**Status:** Complete — commits `344c561`, `ec0a5fb`; 16 tests passing; task review clean.
+
 **Files:**
 - Create: `pyproject.toml`, `Makefile`
 - Modify: `.gitignore` (created before Task 1 by setup commit `308434d`)
@@ -95,7 +97,7 @@ git commit -m "docs: validate specification with cold-start audit"
 - Consumes: none
 - Produces: strict `Action` envelope and `ToolName`; `ToolResult`, `Feedback`, `GovernanceOutcome`, `GovernanceDecision`, `TaskStatus`, `Settings`, `ConfigError`; and `load_settings(workspace: Path) -> Settings`. Task 5 completes `Action.arguments` as strict per-tool discriminated models.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 ```python
 def test_action_rejects_unknown_fields() -> None:
@@ -108,23 +110,23 @@ def test_repository_config_cannot_disable_hard_boundaries(tmp_path: Path) -> Non
         load_settings(tmp_path)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/test_domain.py tests/test_config.py -q`
 
 Expected: collection/import failure because `guarded_agent.domain` and `guarded_agent.config` do not exist.
 
-- [ ] **Step 3: Implement minimal typed contracts and config loader**
+- [x] **Step 3: Implement minimal typed contracts and config loader**
 
 Use strict Pydantic models (`extra="forbid"`) and the full SPEC §7.1 DTO field contracts; define `GovernanceOutcome` at `guarded_agent.domain.GovernanceOutcome`. Parse only the SPEC §4.6 TOML schema through `tomllib`: unknown keys and every `[governance]` key fail with `ConfigError("invalid configuration: ...")`; validate all hard maxima. Resolve the workspace with `Path.resolve(strict=True)`, require a directory, and use defaults when the config file is absent.
 
-- [ ] **Step 4: Verify GREEN and static quality**
+- [x] **Step 4: Verify GREEN and static quality**
 
 Run: `pytest tests/test_domain.py tests/test_config.py -q && ruff check src tests && mypy src`
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pyproject.toml Makefile .gitignore src tests
