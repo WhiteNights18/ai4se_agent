@@ -8,15 +8,20 @@ from guarded_agent.domain import (
     GovernanceDecision,
     GovernanceOutcome,
     TaskStatus,
+    ToolAction,
     ToolName,
     ToolResult,
+    WriteFileArguments,
+    parse_tool_action,
 )
 
 
 def test_action_rejects_unknown_fields() -> None:
     """Catch an action envelope that silently accepts attacker-supplied fields."""
     with pytest.raises(ValidationError):
-        Action.model_validate({"tool": "read_file", "arguments": {}, "surprise": 1})
+        Action.model_validate(
+            {"tool": "read_file", "arguments": {"path": "README.md"}, "surprise": 1}
+        )
 
 
 def test_action_rejects_unknown_tool() -> None:
@@ -34,6 +39,27 @@ def test_action_serializes_the_declared_tool_name() -> None:
         "tool": "read_file",
         "arguments": {"path": "README.md"},
     }
+
+
+def test_public_tool_action_parse_rejects_per_tool_extra_fields() -> None:
+    """Catch provider-facing parsing leaving argument validation until execution time."""
+    with pytest.raises(ValidationError):
+        parse_tool_action(
+            {
+                "tool": "write_file",
+                "arguments": {"path": "x.txt", "content": "x", "surprise": True},
+            }
+        )
+
+
+def test_public_tool_action_exposes_typed_arguments() -> None:
+    """Catch the public discriminated contract degrading back to an untyped dictionary."""
+    parsed: ToolAction = parse_tool_action(
+        {"tool": "write_file", "arguments": {"path": "x.txt", "content": "x"}}
+    )
+
+    assert parsed.tool is ToolName.WRITE_FILE
+    assert isinstance(parsed.arguments, WriteFileArguments)
 
 
 def test_tool_result_and_feedback_keep_the_full_cross_module_payload() -> None:

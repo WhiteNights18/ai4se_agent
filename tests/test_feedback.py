@@ -9,21 +9,24 @@ from guarded_agent.subprocesses import CommandRunner
 
 def test_feedback_classifies_test_failure(tmp_path: Path) -> None:
     """Catch a non-zero validator exit being mislabeled as an infrastructure failure."""
-    feedback = FeedbackEngine(CommandRunner(redactor=Redactor([])))
-
-    result = feedback.verify(
-        [[sys.executable, "-c", "import sys; print('assert x'); sys.exit(1)"]],
-        tmp_path,
+    command = [sys.executable, "-c", "import sys; print('assert x'); sys.exit(1)"]
+    feedback = FeedbackEngine(
+        CommandRunner(redactor=Redactor([])), configured_commands=[command]
     )
+
+    result = feedback.verify([command], tmp_path)
 
     assert result.kind is FeedbackKind.TEST_FAILURE
 
 
 def test_feedback_classifies_all_commands_passing(tmp_path: Path) -> None:
     """Catch successful validators producing anything but final PASS feedback."""
-    feedback = FeedbackEngine(CommandRunner(redactor=Redactor([])))
+    command = [sys.executable, "-c", "print('ok')"]
+    feedback = FeedbackEngine(
+        CommandRunner(redactor=Redactor([])), configured_commands=[command]
+    )
 
-    result = feedback.verify([[sys.executable, "-c", "print('ok')"]], tmp_path)
+    result = feedback.verify([command], tmp_path)
 
     assert result.kind is FeedbackKind.PASS
     assert result.command_result is None
@@ -31,13 +34,12 @@ def test_feedback_classifies_all_commands_passing(tmp_path: Path) -> None:
 
 def test_feedback_classifies_timeout_separately(tmp_path: Path) -> None:
     """Catch timeout being collapsed into a test assertion failure."""
-    feedback = FeedbackEngine(CommandRunner(redactor=Redactor([])))
-
-    result = feedback.verify(
-        [[sys.executable, "-c", "import time; time.sleep(10)"]],
-        tmp_path,
-        timeout=0.05,
+    command = [sys.executable, "-c", "import time; time.sleep(10)"]
+    feedback = FeedbackEngine(
+        CommandRunner(redactor=Redactor([])), configured_commands=[command]
     )
+
+    result = feedback.verify([command], tmp_path, timeout=0.05)
 
     assert result.kind is FeedbackKind.TIMEOUT
     assert result.command_result is not None
@@ -46,8 +48,33 @@ def test_feedback_classifies_timeout_separately(tmp_path: Path) -> None:
 
 def test_feedback_classifies_start_failure_as_tool_failure(tmp_path: Path) -> None:
     """Catch validator startup failures being reported as failing tests."""
-    feedback = FeedbackEngine(CommandRunner(redactor=Redactor([])))
+    command = ["definitely-not-a-real-validator"]
+    feedback = FeedbackEngine(
+        CommandRunner(redactor=Redactor([])), configured_commands=[command]
+    )
 
-    result = feedback.verify([["definitely-not-a-real-validator"]], tmp_path)
+    result = feedback.verify([command], tmp_path)
 
     assert result.kind is FeedbackKind.TOOL_FAILURE
+
+
+def test_feedback_rejects_commands_added_after_its_startup_snapshot(tmp_path: Path) -> None:
+    """Catch persisted acceptance data adding arbitrary validator argv at verification time."""
+    sentinel = tmp_path / "not-validated"
+    configured = [[sys.executable, "-c", "print('configured')"]]
+    injected = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(sentinel)!r}).write_text('owned')",
+    ]
+    feedback = FeedbackEngine(
+        CommandRunner(redactor=Redactor([])),
+        configured_commands=configured,
+    )
+    configured.append(injected)
+
+    result = feedback.verify([injected], tmp_path)
+
+    assert result.kind is FeedbackKind.POLICY_VIOLATION
+    assert result.command_result is None
+    assert not sentinel.exists()

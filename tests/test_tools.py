@@ -1,10 +1,16 @@
+import json
+import os
+import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+import guarded_agent.tools as tools_module
 from guarded_agent.domain import Action, Settings, ToolName
 from guarded_agent.redaction import Redactor
 from guarded_agent.subprocesses import CommandRunner, ProcessStatus
@@ -13,6 +19,22 @@ from guarded_agent.tools import ToolRegistry
 
 def action(tool: ToolName, **arguments: object) -> Action:
     return Action.model_validate({"tool": tool, "arguments": arguments})
+
+
+def test_workspace_root_open_rejects_an_injected_identity_swap(tmp_path: Path) -> None:
+    """Catch a resolved workspace path being replaced before its root fd is opened."""
+    workspace = tmp_path / "workspace"
+    displaced = tmp_path / "displaced"
+    workspace.mkdir()
+
+    def swap_after_identity_capture() -> None:
+        workspace.rename(displaced)
+        workspace.mkdir()
+
+    with pytest.raises(ValueError, match="workspace identity changed"):
+        tools_module._open_workspace_root(  # type: ignore[attr-defined]
+            workspace.resolve(), before_open=swap_after_identity_capture
+        )
 
 
 def test_command_runner_does_not_expand_shell_syntax(tmp_path: Path) -> None:
@@ -78,8 +100,38 @@ def test_command_runner_bounds_each_stream_with_head_and_tail(tmp_path: Path) ->
     assert result.stdout.endswith("-OUT-TAIL")
     assert result.stderr.startswith("ERR-HEAD-")
     assert result.stderr.endswith("-ERR-TAIL")
-    assert len(result.stdout.encode()) <= 96
-    assert len(result.stderr.encode()) <= 96
+    assert len(result.stdout.encode()) <= 64
+    assert len(result.stderr.encode()) <= 64
+
+
+def test_command_runner_redacts_secret_prefix_at_truncated_head(tmp_path: Path) -> None:
+    """Catch a secret prefix leaking where the retained head meets omitted output."""
+    secret = "super-secret-token"
+    exposed_prefix = secret[:8]
+    output = "A" * 24 + exposed_prefix + "M" * 200 + "TAIL"
+    runner = CommandRunner(redactor=Redactor([secret]), max_output_bytes=64)
+
+    result = runner.run([sys.executable, "-c", f"print({output!r}, end='')"], tmp_path, 2)
+
+    assert result.stdout_truncated is True
+    assert exposed_prefix not in result.stdout
+    assert secret not in result.stdout
+    assert len(result.stdout.encode()) <= 64
+
+
+def test_command_runner_redacts_secret_suffix_at_truncated_tail(tmp_path: Path) -> None:
+    """Catch a secret suffix leaking where omitted output meets the retained tail."""
+    secret = "super-secret-token"
+    exposed_suffix = secret[-8:]
+    output = "HEAD" + "M" * 200 + exposed_suffix + "B" * 24
+    runner = CommandRunner(redactor=Redactor([secret]), max_output_bytes=64)
+
+    result = runner.run([sys.executable, "-c", f"print({output!r}, end='')"], tmp_path, 2)
+
+    assert result.stdout_truncated is True
+    assert exposed_suffix not in result.stdout
+    assert secret not in result.stdout
+    assert len(result.stdout.encode()) <= 64
 
 
 def test_command_runner_redacts_both_streams(tmp_path: Path) -> None:
@@ -107,36 +159,27 @@ def test_command_runner_distinguishes_start_failure(tmp_path: Path) -> None:
     assert "failed to start" in result.stderr
 
 
+@pytest.mark.parametrize("argv", [[], ["bad\x00executable"]])
+def test_command_runner_structures_invalid_argv_start_failures(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    """Catch Python argv validation errors escaping the structured runner boundary."""
+    runner = CommandRunner(redactor=Redactor([]))
+
+    result = runner.run(argv, tmp_path, 2)
+
+    assert result.status is ProcessStatus.START_FAILED
+    assert result.exit_code is None
+    assert "failed to start" in result.stderr
+
+
 def test_registry_rejects_extra_arguments_before_writing(tmp_path: Path) -> None:
-    """Catch undocumented fields reaching a handler before strict validation."""
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
+    """Catch undocumented fields crossing the public parse boundary before execution."""
 
-    result = registry.execute(
+    with pytest.raises(ValidationError):
         action(ToolName.WRITE_FILE, path="owned.txt", content="bad", surprise=True)
-    )
 
-    assert result.exit_code is None
-    assert "invalid action" in result.stderr
     assert not (tmp_path / "owned.txt").exists()
-
-
-def test_registry_bounds_and_redacts_validation_errors(tmp_path: Path) -> None:
-    """Catch rejected arguments leaking large credential-bearing values in diagnostics."""
-    secret = "sk-invalid-action-secret"
-    registry = ToolRegistry(
-        tmp_path,
-        Settings(max_output_bytes=64),
-        Redactor([secret]),
-    )
-
-    result = registry.execute(
-        action(ToolName.WRITE_FILE, path="owned.txt", content="bad", surprise=secret * 100)
-    )
-
-    assert result.exit_code is None
-    assert result.stderr_truncated is True
-    assert secret not in result.stderr
-    assert len(result.stderr.encode()) <= 96
 
 
 @pytest.mark.parametrize(
@@ -163,25 +206,21 @@ def test_every_tool_argument_model_forbids_extra_fields(
     tool: ToolName,
     arguments: dict[str, object],
 ) -> None:
-    """Catch any one dispatch variant silently accepting an undocumented field."""
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
+    """Catch any public action variant silently accepting an undocumented field."""
 
-    result = registry.execute(action(tool, **arguments, undocumented="smuggled"))
-
-    assert result.exit_code is None
-    assert "invalid action" in result.stderr
+    with pytest.raises(ValidationError):
+        action(tool, **arguments, undocumented="smuggled")
 
 
 def test_registry_writes_and_reads_a_file_atomically(tmp_path: Path) -> None:
     """Catch a write handler failing to publish the complete content as one replacement."""
     target = tmp_path / "result.txt"
     target.write_text("old", encoding="utf-8")
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
-
-    written = registry.execute(
-        action(ToolName.WRITE_FILE, path="result.txt", content="complete new value")
-    )
-    read = registry.execute(action(ToolName.READ_FILE, path="result.txt"))
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        written = registry.execute(
+            action(ToolName.WRITE_FILE, path="result.txt", content="complete new value")
+        )
+        read = registry.execute(action(ToolName.READ_FILE, path="result.txt"))
 
     assert written.exit_code == 0
     assert written.changes == ["result.txt"]
@@ -189,6 +228,56 @@ def test_registry_writes_and_reads_a_file_atomically(tmp_path: Path) -> None:
     assert read.stdout == "complete new value"
     assert target.read_text(encoding="utf-8") == "complete new value"
     assert not any(path.name.startswith(".guarded-agent-write-") for path in tmp_path.iterdir())
+
+
+def test_atomic_write_failure_preserves_old_content_and_cleans_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a failed publish damaging the prior file or leaving a writable temp artifact."""
+    target = tmp_path / "result.txt"
+    target.write_text("old", encoding="utf-8")
+    real_replace = tools_module.os.replace
+
+    def fail_publish(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        if source.startswith(".guarded-agent-write-"):
+            raise OSError("injected publish failure")
+        real_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(tools_module.os, "replace", fail_publish)
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(ToolName.WRITE_FILE, path="result.txt", content="new")
+        )
+
+    assert result.exit_code is None
+    assert target.read_text(encoding="utf-8") == "old"
+    assert not any(path.name.startswith(".guarded-agent-write-") for path in tmp_path.iterdir())
+
+
+def test_atomic_overwrite_preserves_existing_file_mode(tmp_path: Path) -> None:
+    """Catch atomic replacement silently changing repository file permissions."""
+    target = tmp_path / "script.sh"
+    target.write_text("old", encoding="utf-8")
+    target.chmod(0o750)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(ToolName.WRITE_FILE, path="script.sh", content="new")
+        )
+
+    assert result.exit_code == 0
+    assert stat.S_IMODE(target.stat().st_mode) == 0o750
 
 
 def test_registry_never_follows_a_workspace_symlink_for_file_access(tmp_path: Path) -> None:
@@ -200,12 +289,11 @@ def test_registry_never_follows_a_workspace_symlink_for_file_access(tmp_path: Pa
     secret = outside / "secret.txt"
     secret.write_text("outside-secret", encoding="utf-8")
     (workspace / "swapped").symlink_to(outside, target_is_directory=True)
-    registry = ToolRegistry(workspace, Settings(), Redactor([]))
-
-    read = registry.execute(action(ToolName.READ_FILE, path="swapped/secret.txt"))
-    write = registry.execute(
-        action(ToolName.WRITE_FILE, path="swapped/owned.txt", content="owned")
-    )
+    with ToolRegistry(workspace, Settings(), Redactor([])) as registry:
+        read = registry.execute(action(ToolName.READ_FILE, path="swapped/secret.txt"))
+        write = registry.execute(
+            action(ToolName.WRITE_FILE, path="swapped/owned.txt", content="owned")
+        )
 
     assert read.exit_code is None
     assert write.exit_code is None
@@ -213,17 +301,71 @@ def test_registry_never_follows_a_workspace_symlink_for_file_access(tmp_path: Pa
     assert not (outside / "owned.txt").exists()
 
 
+def test_registry_safely_reopens_an_internal_file_symlink(tmp_path: Path) -> None:
+    """Catch safe internal symlinks being rejected instead of reopened by canonical identity."""
+    target = tmp_path / "real.txt"
+    target.write_text("internal content", encoding="utf-8")
+    (tmp_path / "alias.txt").symlink_to(target.name)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(action(ToolName.READ_FILE, path="alias.txt"))
+
+    assert result.exit_code == 0
+    assert result.stdout == "internal content"
+
+
+def test_registry_safely_reopens_an_internal_search_symlink(tmp_path: Path) -> None:
+    """Catch search_text losing SPEC-required internal directory symlink support."""
+    target = tmp_path / "real-src"
+    target.mkdir()
+    (target / "inside.py").write_text("find needle\n", encoding="utf-8")
+    (tmp_path / "alias-src").symlink_to(target.name, target_is_directory=True)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(ToolName.SEARCH_TEXT, path="alias-src", query="needle")
+        )
+
+    assert result.exit_code == 0
+    assert result.stdout == "alias-src/inside.py:1:find needle"
+
+
+def test_registry_rejects_fifo_reads_without_blocking(tmp_path: Path) -> None:
+    """Catch read_file blocking on a FIFO before it can reject the non-regular target."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    def unblock_unsafe_reader() -> None:
+        time.sleep(0.3)
+        try:
+            descriptor = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            return
+        os.close(descriptor)
+
+    release = threading.Thread(target=unblock_unsafe_reader)
+    release.start()
+    started = time.monotonic()
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(action(ToolName.READ_FILE, path="pipe"))
+    elapsed = time.monotonic() - started
+    release.join(timeout=1)
+
+    assert elapsed < 0.2
+    assert result.exit_code is None
+    assert "regular file" in result.stderr
+
+
 def test_registry_delete_and_move_operate_on_dirfd_entries(tmp_path: Path) -> None:
     """Catch destructive handlers reopening an already-approved path through resolution."""
     (tmp_path / "old.txt").write_text("old", encoding="utf-8")
     (tmp_path / "delete.txt").write_text("delete", encoding="utf-8")
     (tmp_path / "archive").mkdir()
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
-
-    moved = registry.execute(
-        action(ToolName.MOVE_FILE, source="old.txt", destination="archive/new.txt")
-    )
-    deleted = registry.execute(action(ToolName.DELETE_FILE, path="delete.txt"))
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        moved = registry.execute(
+            action(ToolName.MOVE_FILE, source="old.txt", destination="archive/new.txt")
+        )
+        deleted = registry.execute(action(ToolName.DELETE_FILE, path="delete.txt"))
 
     assert moved.exit_code == 0
     assert moved.changes == ["old.txt", "archive/new.txt"]
@@ -233,23 +375,54 @@ def test_registry_delete_and_move_operate_on_dirfd_entries(tmp_path: Path) -> No
     assert not (tmp_path / "delete.txt").exists()
 
 
+def test_verified_move_rejects_an_injected_source_leaf_replacement(tmp_path: Path) -> None:
+    """Catch move_file renaming a different leaf than the one whose type was approved."""
+    source = tmp_path / "source.txt"
+    displaced = tmp_path / "displaced.txt"
+    replacement = tmp_path / "replacement.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("original", encoding="utf-8")
+    replacement.write_text("attacker", encoding="utf-8")
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def replace_source_leaf() -> None:
+        source.rename(displaced)
+        replacement.rename(source)
+
+    try:
+        with pytest.raises(ValueError, match="source identity changed"):
+            tools_module._move_verified(  # type: ignore[attr-defined]
+                directory_fd,
+                source.name,
+                directory_fd,
+                destination.name,
+                before_rename=replace_source_leaf,
+            )
+    finally:
+        os.close(directory_fd)
+
+    assert source.read_text(encoding="utf-8") == "attacker"
+    assert displaced.read_text(encoding="utf-8") == "original"
+    assert not destination.exists()
+
+
 def test_registry_bounds_reads_and_redacts_file_content(tmp_path: Path) -> None:
     """Catch a dedicated read returning an unbounded or credential-bearing payload."""
     secret = "sk-file-secret"
     (tmp_path / "large.txt").write_text("HEAD-" + secret + "x" * 1000 + "-TAIL")
-    registry = ToolRegistry(
+    with ToolRegistry(
         tmp_path,
         Settings(max_output_bytes=64),
         Redactor([secret]),
-    )
-
-    result = registry.execute(action(ToolName.READ_FILE, path="large.txt"))
+    ) as registry:
+        result = registry.execute(action(ToolName.READ_FILE, path="large.txt"))
 
     assert result.exit_code == 0
     assert result.stdout_truncated is True
     assert result.stdout.startswith("HEAD-")
     assert result.stdout.endswith("-TAIL")
     assert secret not in result.stdout
+    assert len(result.stdout.encode()) <= 64
 
 
 def test_registry_lists_and_searches_without_following_symlinks(tmp_path: Path) -> None:
@@ -262,12 +435,11 @@ def test_registry_lists_and_searches_without_following_symlinks(tmp_path: Path) 
     (source / "b.py").write_text("second needle\n", encoding="utf-8")
     (outside / "secret.py").write_text("outside needle\n", encoding="utf-8")
     (source / "escape").symlink_to(outside, target_is_directory=True)
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
-
-    listing = registry.execute(action(ToolName.LIST_DIRECTORY, path="src"))
-    searched = registry.execute(
-        action(ToolName.SEARCH_TEXT, path="src", query="needle", max_results=10)
-    )
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        listing = registry.execute(action(ToolName.LIST_DIRECTORY, path="src"))
+        searched = registry.execute(
+            action(ToolName.SEARCH_TEXT, path="src", query="needle", max_results=10)
+        )
 
     assert listing.stdout.splitlines() == ["a.py", "b.py", "escape"]
     assert searched.stdout.splitlines() == [
@@ -283,14 +455,55 @@ def test_registry_bounds_large_directory_listings(tmp_path: Path) -> None:
     directory.mkdir()
     for index in range(20):
         (directory / f"entry-{index:02}.txt").touch()
-    registry = ToolRegistry(tmp_path, Settings(max_output_bytes=32), Redactor([]))
-
-    result = registry.execute(action(ToolName.LIST_DIRECTORY, path="many"))
+    with ToolRegistry(tmp_path, Settings(max_output_bytes=32), Redactor([])) as registry:
+        result = registry.execute(action(ToolName.LIST_DIRECTORY, path="many"))
 
     assert result.exit_code == 0
     assert result.stdout_truncated is True
     assert result.stdout.startswith("entry-00")
     assert result.stdout.endswith("entry-19.txt")
+    assert len(result.stdout.encode()) <= 32
+
+
+def test_search_rejects_a_total_tree_entry_limit_without_partial_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch per-directory/file counters allowing a wide tree to bypass the global cap."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    for name in ("a", "b"):
+        child = root / name
+        child.mkdir()
+        (child / "match.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(tools_module, "_MAX_DIRECTORY_ENTRIES", 3)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(ToolName.SEARCH_TEXT, path="tree", query="needle")
+        )
+
+    assert result.exit_code is None
+    assert result.stdout == ""
+    assert "entry limit exceeded" in result.stderr
+
+
+def test_search_rejects_excessive_directory_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch recursive traversal consuming unbounded descriptors or call depth."""
+    nested = tmp_path / "tree" / "one" / "two"
+    nested.mkdir(parents=True)
+    (nested / "match.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(tools_module, "_MAX_SEARCH_DEPTH", 1, raising=False)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(ToolName.SEARCH_TEXT, path="tree", query="needle")
+        )
+
+    assert result.exit_code is None
+    assert result.stdout == ""
+    assert "depth limit exceeded" in result.stderr
 
 
 def test_registry_runs_only_the_startup_validator_argv(tmp_path: Path) -> None:
@@ -299,13 +512,12 @@ def test_registry_runs_only_the_startup_validator_argv(tmp_path: Path) -> None:
     script = f"from pathlib import Path; Path({str(sentinel)!r}).write_text('ok')"
     configured = [sys.executable, "-c", script]
     settings = Settings(validation_commands=[configured])
-    registry = ToolRegistry(tmp_path, settings, Redactor([]))
-    settings.validation_commands.append([sys.executable, "-c", "print('changed')"])
-
-    denied = registry.execute(
-        action(ToolName.RUN_VALIDATOR, argv=configured + ["unexpected"])
-    )
-    allowed = registry.execute(action(ToolName.RUN_VALIDATOR, argv=configured))
+    with ToolRegistry(tmp_path, settings, Redactor([])) as registry:
+        settings.validation_commands.append([sys.executable, "-c", "print('changed')"])
+        denied = registry.execute(
+            action(ToolName.RUN_VALIDATOR, argv=configured + ["unexpected"])
+        )
+        allowed = registry.execute(action(ToolName.RUN_VALIDATOR, argv=configured))
 
     assert denied.exit_code is None
     assert "not configured" in denied.stderr
@@ -325,13 +537,48 @@ def test_registry_provides_dedicated_git_status_and_diff(tmp_path: Path) -> None
         check=True,
     )
     tracked.write_text("after\n", encoding="utf-8")
-    registry = ToolRegistry(tmp_path, Settings(), Redactor([]))
-
-    status = registry.execute(action(ToolName.GIT_STATUS))
-    diff = registry.execute(action(ToolName.GIT_DIFF))
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        status = registry.execute(action(ToolName.GIT_STATUS))
+        diff = registry.execute(action(ToolName.GIT_DIFF))
 
     assert status.exit_code == 0
     assert "tracked.txt" in status.stdout
     assert diff.exit_code == 0
     assert "-before" in diff.stdout
     assert "+after" in diff.stdout
+
+
+def test_dedicated_git_uses_a_startup_resolved_path_and_hardened_configuration(
+    tmp_path: Path,
+) -> None:
+    """Catch dedicated Git reads falling back to PATH or repository-controlled helpers."""
+    fake_git = tmp_path / "test-git"
+    fake_git.write_text(
+        "#!/usr/bin/python3\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv[1:], "
+        "'nosystem': os.environ.get('GIT_CONFIG_NOSYSTEM')}))\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+
+    with ToolRegistry(
+        tmp_path,
+        Settings(),
+        Redactor([]),
+        git_executable=fake_git,
+    ) as registry:
+        result = registry.execute(action(ToolName.GIT_STATUS))
+
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "argv": [
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "status",
+            "--short",
+        ],
+        "nosystem": "1",
+    }

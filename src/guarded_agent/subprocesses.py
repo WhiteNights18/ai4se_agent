@@ -55,14 +55,20 @@ class CommandRunner:
                 shell=False,
                 start_new_session=True,
             )
-        except OSError as error:
+        except (OSError, ValueError, IndexError) as error:
+            stderr, stderr_truncated = self._redactor.redact_bounded(
+                f"command failed to start: {error}",
+                "",
+                limit_bytes=self._max_output_bytes,
+                truncated=False,
+            )
             return CommandResult(
                 ProcessStatus.START_FAILED,
                 None,
                 "",
-                self._redactor.redact(f"command failed to start: {error}"),
+                stderr,
                 False,
-                False,
+                stderr_truncated,
                 _duration_ms(started),
             )
         stdout_buffer = _BoundedBytes(self._max_output_bytes)
@@ -73,13 +79,15 @@ class CommandRunner:
             stdout_buffer=stdout_buffer,
             stderr_buffer=stderr_buffer,
         )
+        stdout, stdout_truncated = _redacted_stream_fields(stdout_buffer, self._redactor)
+        stderr, stderr_truncated = _redacted_stream_fields(stderr_buffer, self._redactor)
         return CommandResult(
             status,
             process.returncode if status is ProcessStatus.EXITED else None,
-            self._redactor.redact(_decode(stdout_buffer.render())),
-            self._redactor.redact(_decode(stderr_buffer.render())),
-            stdout_buffer.truncated,
-            stderr_buffer.truncated,
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
             _duration_ms(started),
         )
 
@@ -99,6 +107,10 @@ class _BoundedBytes:
     def truncated(self) -> bool:
         return self._total > self._limit
 
+    @property
+    def limit(self) -> int:
+        return self._limit
+
     def add(self, chunk: bytes) -> None:
         self._total += len(chunk)
         head_remaining = self._head_limit - len(self._head)
@@ -111,10 +123,21 @@ class _BoundedBytes:
         if len(self._tail) > self._tail_limit:
             del self._tail[: len(self._tail) - self._tail_limit]
 
-    def render(self) -> bytes:
-        if not self.truncated:
-            return bytes(self._head + self._tail)
-        return bytes(self._head) + b"\n... output truncated ...\n" + bytes(self._tail)
+    def segments(self) -> tuple[bytes, bytes]:
+        return bytes(self._head), bytes(self._tail)
+
+
+def _redacted_stream_fields(
+    buffer: _BoundedBytes,
+    redactor: Redactor,
+) -> tuple[str, bool]:
+    head, tail = buffer.segments()
+    return redactor.redact_bounded(
+        _decode(head),
+        _decode(tail),
+        limit_bytes=buffer.limit,
+        truncated=buffer.truncated,
+    )
 
 
 def _capture_until_exit(
@@ -200,7 +223,9 @@ def _process_group_exists(process_group_id: int) -> bool:
 
 def _allowed_environment() -> dict[str, str]:
     allowed_names = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
-    return {name: os.environ[name] for name in allowed_names if name in os.environ}
+    environment = {name: os.environ[name] for name in allowed_names if name in os.environ}
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    return environment
 
 
 def _decode(value: bytes | str | None) -> str:

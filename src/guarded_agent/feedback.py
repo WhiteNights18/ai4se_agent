@@ -9,8 +9,14 @@ from guarded_agent.subprocesses import CommandResult, CommandRunner, ProcessStat
 
 
 class FeedbackEngine:
-    def __init__(self, runner: CommandRunner) -> None:
+    def __init__(
+        self,
+        runner: CommandRunner,
+        *,
+        configured_commands: list[list[str]],
+    ) -> None:
         self._runner = runner
+        self._configured_commands = frozenset(tuple(command) for command in configured_commands)
 
     def verify(
         self,
@@ -19,6 +25,13 @@ class FeedbackEngine:
         timeout: float = 120,
     ) -> Feedback:
         for argv in commands:
+            if tuple(argv) not in self._configured_commands:
+                return Feedback(
+                    kind=FeedbackKind.POLICY_VIOLATION,
+                    message="validation command was not configured at startup",
+                    command_result=None,
+                    can_continue=True,
+                )
             result = self._runner.run(argv, cwd, timeout)
             tool_result = _tool_result(result)
             if result.status is ProcessStatus.TIMED_OUT:

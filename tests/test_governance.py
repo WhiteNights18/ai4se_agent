@@ -4,7 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from guarded_agent.domain import Action, GovernanceOutcome, Settings, TaskStatus, ToolName
+from guarded_agent.domain import (
+    Action,
+    GovernanceOutcome,
+    SaveMemoryAction,
+    SaveMemoryArguments,
+    Settings,
+    TaskStatus,
+    ToolName,
+    parse_tool_action,
+)
 from guarded_agent.governance import GovernanceEngine, Policy, action_digest
 from guarded_agent.paths import PolicyDenied
 from guarded_agent.storage import ApprovalStatus, Database
@@ -12,6 +21,18 @@ from guarded_agent.storage import ApprovalStatus, Database
 
 def action(tool: ToolName, **arguments: object) -> Action:
     return Action.model_validate({"tool": tool, "arguments": arguments})
+
+
+def test_governance_consumes_the_public_strict_tool_action(engine: GovernanceEngine) -> None:
+    """Catch governance accepting only the legacy Action wrapper from the parse boundary."""
+    parsed = parse_tool_action(
+        {"tool": "read_file", "arguments": {"path": "README.md"}}
+    )
+
+    decision = engine.evaluate(parsed)
+
+    assert decision.outcome is GovernanceOutcome.ALLOW
+    assert decision.rule_id == "read_only"
 
 
 @pytest.fixture
@@ -454,7 +475,14 @@ def test_unserializable_numeric_values_fail_policy_evaluation_closed(
     engine: GovernanceEngine,
 ) -> None:
     """Catch NaN entering a non-canonical digest and creating an ambiguous approval."""
-    unsafe = Action.model_construct(tool=ToolName.SAVE_MEMORY, arguments={"content": float("nan")})
+    unsafe = Action.model_construct(
+        root=SaveMemoryAction.model_construct(
+            tool=ToolName.SAVE_MEMORY,
+            arguments=SaveMemoryArguments.model_construct(
+                category="fact", content=float("nan")
+            ),
+        )
+    )
 
     decision = engine.evaluate(unsafe)
 

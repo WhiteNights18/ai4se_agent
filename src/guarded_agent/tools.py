@@ -6,181 +6,43 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from time import monotonic
-from typing import Annotated, Literal, Self
+from typing import Self
 
-from pydantic import Field, StrictInt, StrictStr, TypeAdapter, ValidationError
-
-from guarded_agent.domain import Action, Settings, StrictDTO, ToolName, ToolResult
+from guarded_agent.domain import (
+    Action,
+    CompleteAction,
+    DeleteFileAction,
+    GitDiffAction,
+    GitStatusAction,
+    ListDirectoryAction,
+    MoveFileAction,
+    ReadFileAction,
+    RetrieveMemoryAction,
+    RunCommandAction,
+    RunValidatorAction,
+    SaveMemoryAction,
+    SearchTextAction,
+    SearchTextArguments,
+    Settings,
+    ToolAction,
+    ToolName,
+    ToolResult,
+    WriteFileAction,
+)
 from guarded_agent.memory import MemorySource, MemoryStore, MemoryTrust
 from guarded_agent.paths import PolicyDenied, is_sensitive_path, normalize_relative_posix
 from guarded_agent.redaction import Redactor
 from guarded_agent.subprocesses import CommandResult, CommandRunner
 
-PathArgument = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
-TextArgument = Annotated[StrictStr, Field(min_length=1, max_length=65_536)]
-CommandArgument = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
-CommandArgv = Annotated[list[CommandArgument], Field(min_length=1, max_length=128)]
-
-
-class ListDirectoryArguments(StrictDTO):
-    path: PathArgument
-
-
-class ReadFileArguments(StrictDTO):
-    path: PathArgument
-
-
-class SearchTextArguments(StrictDTO):
-    path: PathArgument
-    query: TextArgument
-    max_results: StrictInt = Field(default=100, ge=1, le=1000)
-
-
-class WriteFileArguments(StrictDTO):
-    path: PathArgument
-    content: StrictStr
-
-
-class DeleteFileArguments(StrictDTO):
-    path: PathArgument
-
-
-class MoveFileArguments(StrictDTO):
-    source: PathArgument
-    destination: PathArgument
-
-
-class GitStatusArguments(StrictDTO):
-    pass
-
-
-class GitDiffArguments(StrictDTO):
-    pass
-
-
-class RunCommandArguments(StrictDTO):
-    argv: CommandArgv
-
-
-class RunValidatorArguments(StrictDTO):
-    argv: CommandArgv
-
-
-class SaveMemoryArguments(StrictDTO):
-    category: TextArgument
-    content: TextArgument
-
-
-class RetrieveMemoryArguments(StrictDTO):
-    query: TextArgument
-    limit: StrictInt = Field(default=10, ge=1, le=100)
-
-
-class CompleteArguments(StrictDTO):
-    summary: Annotated[StrictStr, Field(max_length=65_536)] = ""
-
-
-class CannotContinueArguments(StrictDTO):
-    reason: TextArgument
-
-
-class ListDirectoryInvocation(StrictDTO):
-    tool: Literal[ToolName.LIST_DIRECTORY]
-    arguments: ListDirectoryArguments
-
-
-class ReadFileInvocation(StrictDTO):
-    tool: Literal[ToolName.READ_FILE]
-    arguments: ReadFileArguments
-
-
-class SearchTextInvocation(StrictDTO):
-    tool: Literal[ToolName.SEARCH_TEXT]
-    arguments: SearchTextArguments
-
-
-class WriteFileInvocation(StrictDTO):
-    tool: Literal[ToolName.WRITE_FILE]
-    arguments: WriteFileArguments
-
-
-class DeleteFileInvocation(StrictDTO):
-    tool: Literal[ToolName.DELETE_FILE]
-    arguments: DeleteFileArguments
-
-
-class MoveFileInvocation(StrictDTO):
-    tool: Literal[ToolName.MOVE_FILE]
-    arguments: MoveFileArguments
-
-
-class GitStatusInvocation(StrictDTO):
-    tool: Literal[ToolName.GIT_STATUS]
-    arguments: GitStatusArguments
-
-
-class GitDiffInvocation(StrictDTO):
-    tool: Literal[ToolName.GIT_DIFF]
-    arguments: GitDiffArguments
-
-
-class RunCommandInvocation(StrictDTO):
-    tool: Literal[ToolName.RUN_COMMAND]
-    arguments: RunCommandArguments
-
-
-class RunValidatorInvocation(StrictDTO):
-    tool: Literal[ToolName.RUN_VALIDATOR]
-    arguments: RunValidatorArguments
-
-
-class SaveMemoryInvocation(StrictDTO):
-    tool: Literal[ToolName.SAVE_MEMORY]
-    arguments: SaveMemoryArguments
-
-
-class RetrieveMemoryInvocation(StrictDTO):
-    tool: Literal[ToolName.RETRIEVE_MEMORY]
-    arguments: RetrieveMemoryArguments
-
-
-class CompleteInvocation(StrictDTO):
-    tool: Literal[ToolName.COMPLETE]
-    arguments: CompleteArguments
-
-
-class CannotContinueInvocation(StrictDTO):
-    tool: Literal[ToolName.CANNOT_CONTINUE]
-    arguments: CannotContinueArguments
-
-
-type ToolInvocation = Annotated[
-    ListDirectoryInvocation
-    | ReadFileInvocation
-    | SearchTextInvocation
-    | WriteFileInvocation
-    | DeleteFileInvocation
-    | MoveFileInvocation
-    | GitStatusInvocation
-    | GitDiffInvocation
-    | RunCommandInvocation
-    | RunValidatorInvocation
-    | SaveMemoryInvocation
-    | RetrieveMemoryInvocation
-    | CompleteInvocation
-    | CannotContinueInvocation,
-    Field(discriminator="tool"),
-]
-
-_INVOCATION_ADAPTER: TypeAdapter[ToolInvocation] = TypeAdapter(ToolInvocation)
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-_FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+_FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 _MAX_DIRECTORY_ENTRIES = 10_000
-_MAX_SEARCH_FILES = 10_000
+_MAX_SEARCH_DEPTH = 64
 
 
 class ToolRegistry:
@@ -195,12 +57,14 @@ class ToolRegistry:
         runner: CommandRunner | None = None,
         memory_store: MemoryStore | None = None,
         workspace_id: str | None = None,
+        git_executable: Path | None = None,
     ) -> None:
         canonical_workspace = workspace.resolve(strict=True)
         if not canonical_workspace.is_dir():
             raise ValueError("workspace must be a directory")
+        resolved_git = _resolve_git_executable(git_executable)
         self._workspace = canonical_workspace
-        self._root_fd = os.open(canonical_workspace, _DIRECTORY_FLAGS)
+        self._root_fd = _open_workspace_root(canonical_workspace)
         self._settings = settings.model_copy(deep=True)
         self._validation_commands = frozenset(
             tuple(command) for command in settings.validation_commands
@@ -212,6 +76,7 @@ class ToolRegistry:
         )
         self._memory_store = memory_store
         self._workspace_id = workspace_id
+        self._git_executable = resolved_git
 
     def close(self) -> None:
         if self._root_fd >= 0:
@@ -224,27 +89,18 @@ class ToolRegistry:
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
 
-    def execute(self, action: Action) -> ToolResult:
-        """Reject invalid arguments before dispatch and structure every execution error."""
+    def execute(self, action: ToolAction | Action) -> ToolResult:
+        """Execute one action that passed the public strict domain parse boundary."""
         started = monotonic()
-        try:
-            invocation = _INVOCATION_ADAPTER.validate_python(
-                {"tool": action.tool, "arguments": action.arguments}
-            )
-        except ValidationError as error:
-            return self._failure(
-                action.tool,
-                f"invalid action: {error}",
-                started,
-            )
+        invocation = action.root if isinstance(action, Action) else action
 
         try:
             return self._dispatch(invocation, started)
         except (OSError, PolicyDenied, ValueError) as error:
             return self._failure(action.tool, f"tool failed: {error}", started)
 
-    def _dispatch(self, invocation: ToolInvocation, started: float) -> ToolResult:
-        if isinstance(invocation, ListDirectoryInvocation):
+    def _dispatch(self, invocation: ToolAction, started: float) -> ToolResult:
+        if isinstance(invocation, ListDirectoryAction):
             output, truncated = self._list_directory(invocation.arguments.path)
             return self._success(
                 invocation.tool,
@@ -252,7 +108,7 @@ class ToolRegistry:
                 started,
                 stdout_truncated=truncated,
             )
-        if isinstance(invocation, ReadFileInvocation):
+        if isinstance(invocation, ReadFileAction):
             output, truncated = self._read_file(invocation.arguments.path)
             return self._success(
                 invocation.tool,
@@ -260,7 +116,7 @@ class ToolRegistry:
                 started,
                 stdout_truncated=truncated,
             )
-        if isinstance(invocation, SearchTextInvocation):
+        if isinstance(invocation, SearchTextAction):
             output, truncated = self._search_text(invocation.arguments)
             return self._success(
                 invocation.tool,
@@ -268,7 +124,7 @@ class ToolRegistry:
                 started,
                 stdout_truncated=truncated,
             )
-        if isinstance(invocation, WriteFileInvocation):
+        if isinstance(invocation, WriteFileAction):
             self._write_file(invocation.arguments.path, invocation.arguments.content)
             return self._success(
                 invocation.tool,
@@ -276,7 +132,7 @@ class ToolRegistry:
                 started,
                 changes=[invocation.arguments.path],
             )
-        if isinstance(invocation, DeleteFileInvocation):
+        if isinstance(invocation, DeleteFileAction):
             self._delete_file(invocation.arguments.path)
             return self._success(
                 invocation.tool,
@@ -284,7 +140,7 @@ class ToolRegistry:
                 started,
                 changes=[invocation.arguments.path],
             )
-        if isinstance(invocation, MoveFileInvocation):
+        if isinstance(invocation, MoveFileAction):
             self._move_file(invocation.arguments.source, invocation.arguments.destination)
             return self._success(
                 invocation.tool,
@@ -292,25 +148,31 @@ class ToolRegistry:
                 started,
                 changes=[invocation.arguments.source, invocation.arguments.destination],
             )
-        if isinstance(invocation, GitStatusInvocation):
+        if isinstance(invocation, GitStatusAction):
             return self._command_result(
                 invocation.tool,
                 self._runner.run(
-                    ["git", "status", "--short"],
+                    [*self._git_prefix(), "status", "--short"],
                     self._stable_cwd(),
                     self._settings.command_timeout_seconds,
                 ),
             )
-        if isinstance(invocation, GitDiffInvocation):
+        if isinstance(invocation, GitDiffAction):
             return self._command_result(
                 invocation.tool,
                 self._runner.run(
-                    ["git", "diff", "--no-ext-diff", "--no-textconv", "--no-color"],
+                    [
+                        *self._git_prefix(),
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-color",
+                    ],
                     self._stable_cwd(),
                     self._settings.command_timeout_seconds,
                 ),
             )
-        if isinstance(invocation, RunCommandInvocation):
+        if isinstance(invocation, RunCommandAction):
             return self._command_result(
                 invocation.tool,
                 self._runner.run(
@@ -319,7 +181,7 @@ class ToolRegistry:
                     self._settings.command_timeout_seconds,
                 ),
             )
-        if isinstance(invocation, RunValidatorInvocation):
+        if isinstance(invocation, RunValidatorAction):
             if tuple(invocation.arguments.argv) not in self._validation_commands:
                 return self._failure(
                     invocation.tool,
@@ -334,33 +196,35 @@ class ToolRegistry:
                     self._settings.command_timeout_seconds,
                 ),
             )
-        if isinstance(invocation, SaveMemoryInvocation):
+        if isinstance(invocation, SaveMemoryAction):
             return self._save_memory(invocation, started)
-        if isinstance(invocation, RetrieveMemoryInvocation):
+        if isinstance(invocation, RetrieveMemoryAction):
             return self._retrieve_memory(invocation, started)
-        if isinstance(invocation, CompleteInvocation):
+        if isinstance(invocation, CompleteAction):
             return self._success(invocation.tool, invocation.arguments.summary, started)
         return self._success(invocation.tool, invocation.arguments.reason, started)
 
     def _list_directory(self, path: str) -> tuple[str, bool]:
-        parts = _safe_parts(path)
-        directory_fd = self._open_directory(parts)
+        directory_fd = self._open_resolved_target(path, _DIRECTORY_FLAGS)
         try:
-            entries = os.listdir(directory_fd)
-            if len(entries) > _MAX_DIRECTORY_ENTRIES:
-                raise ValueError("directory entry limit exceeded")
+            if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+                raise ValueError("list_directory target must be a directory")
+            entries: list[str] = []
+            with os.scandir(directory_fd) as iterator:
+                for scanned_entry in iterator:
+                    entries.append(scanned_entry.name)
+                    if len(entries) > _MAX_DIRECTORY_ENTRIES:
+                        raise ValueError("directory entry limit exceeded")
             output = _OutputBuffer(self._settings.max_output_bytes)
-            for index, entry in enumerate(sorted(entries)):
+            for index, entry_name in enumerate(sorted(entries)):
                 prefix = "" if index == 0 else "\n"
-                output.add(f"{prefix}{entry}".encode())
-            return self._redactor.redact(output.text()), output.truncated
+                output.add(f"{prefix}{entry_name}".encode())
+            return self._finish_output(output)
         finally:
             os.close(directory_fd)
 
     def _read_file(self, path: str) -> tuple[str, bool]:
-        parts = _safe_parts(path)
-        with self._parent_fd(parts) as (parent_fd, name):
-            file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=parent_fd)
+        file_fd = self._open_resolved_target(path, _FILE_READ_FLAGS)
         try:
             file_stat = os.fstat(file_fd)
             if not stat.S_ISREG(file_stat.st_mode):
@@ -376,16 +240,20 @@ class ToolRegistry:
                 output.add(head)
                 output.note_omitted(max(0, file_stat.st_size - len(head) - len(tail)))
                 output.add(tail)
-            return self._redactor.redact(output.text()), output.truncated
+            return self._finish_output(output)
         finally:
             os.close(file_fd)
 
     def _search_text(self, arguments: SearchTextArguments) -> tuple[str, bool]:
-        parts = _safe_parts(arguments.path)
-        target_fd = self._open_target(parts)
+        target_parts, expected_target = self._resolved_target(arguments.path)
+        target_fd = self._open_expected_target(
+            target_parts,
+            _FILE_READ_FLAGS,
+            expected_target,
+        )
         output = _OutputBuffer(self._settings.max_output_bytes)
         matches = 0
-        files_seen = 0
+        entries_seen = 0
         try:
             target_stat = os.fstat(target_fd)
             if stat.S_ISREG(target_stat.st_mode):
@@ -397,56 +265,73 @@ class ToolRegistry:
                     output,
                 )
             elif stat.S_ISDIR(target_stat.st_mode):
-                stack: list[tuple[str, int]] = [(arguments.path, target_fd)]
+                directories = deque(
+                    [(target_parts, arguments.path, 0, _file_identity(target_stat))]
+                )
+                os.close(target_fd)
                 target_fd = -1
-                try:
-                    while stack and matches < arguments.max_results:
-                        directory_path, directory_fd = stack.pop()
-                        try:
-                            child_directories: list[tuple[str, str]] = []
-                            for name in sorted(os.listdir(directory_fd)):
-                                entry_stat = os.stat(
-                                    name, dir_fd=directory_fd, follow_symlinks=False
-                                )
-                                display_path = f"{directory_path}/{name}"
-                                if stat.S_ISDIR(entry_stat.st_mode):
-                                    child_directories.append((name, display_path))
-                                elif stat.S_ISREG(entry_stat.st_mode):
-                                    files_seen += 1
-                                    if files_seen > _MAX_SEARCH_FILES:
-                                        raise ValueError("search file limit exceeded")
-                                    file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=directory_fd)
-                                    try:
-                                        matches += self._search_file(
-                                            file_fd,
-                                            display_path,
-                                            arguments.query,
-                                            arguments.max_results - matches,
-                                            output,
-                                        )
-                                    finally:
-                                        os.close(file_fd)
-                                if matches >= arguments.max_results:
-                                    break
-                            for name, display_path in reversed(child_directories):
-                                try:
-                                    child_fd = os.open(
-                                        name, _DIRECTORY_FLAGS, dir_fd=directory_fd
+                while directories and matches < arguments.max_results:
+                    directory_parts, directory_path, depth, expected_identity = (
+                        directories.popleft()
+                    )
+                    directory_fd = self._open_target(directory_parts, _DIRECTORY_FLAGS)
+                    try:
+                        if _file_identity(os.fstat(directory_fd)) != expected_identity:
+                            raise ValueError("search directory identity changed")
+                        names: list[str] = []
+                        with os.scandir(directory_fd) as iterator:
+                            for entry in iterator:
+                                entries_seen += 1
+                                if entries_seen > _MAX_DIRECTORY_ENTRIES:
+                                    raise ValueError("search tree entry limit exceeded")
+                                names.append(entry.name)
+                        for name in sorted(names):
+                            entry_stat = os.stat(
+                                name, dir_fd=directory_fd, follow_symlinks=False
+                            )
+                            display_path = f"{directory_path}/{name}"
+                            if stat.S_ISDIR(entry_stat.st_mode):
+                                child_depth = depth + 1
+                                if child_depth > _MAX_SEARCH_DEPTH:
+                                    raise ValueError("search directory depth limit exceeded")
+                                directories.append(
+                                    (
+                                        (*directory_parts, name),
+                                        display_path,
+                                        child_depth,
+                                        _file_identity(entry_stat),
                                     )
-                                except OSError:
-                                    continue
-                                stack.append((display_path, child_fd))
-                        finally:
-                            os.close(directory_fd)
-                finally:
-                    for _, directory_fd in stack:
+                                )
+                            elif stat.S_ISREG(entry_stat.st_mode):
+                                file_fd = os.open(
+                                    name,
+                                    _FILE_READ_FLAGS,
+                                    dir_fd=directory_fd,
+                                )
+                                try:
+                                    if _file_identity(os.fstat(file_fd)) != _file_identity(
+                                        entry_stat
+                                    ):
+                                        raise ValueError("search file identity changed")
+                                    matches += self._search_file(
+                                        file_fd,
+                                        display_path,
+                                        arguments.query,
+                                        arguments.max_results - matches,
+                                        output,
+                                    )
+                                finally:
+                                    os.close(file_fd)
+                            if matches >= arguments.max_results:
+                                break
+                    finally:
                         os.close(directory_fd)
             else:
                 raise ValueError("search_text target must be a file or directory")
         finally:
             if target_fd >= 0:
                 os.close(target_fd)
-        return self._redactor.redact(output.text()), output.truncated
+        return self._finish_output(output)
 
     def _search_file(
         self,
@@ -478,6 +363,14 @@ class ToolRegistry:
             raise ValueError("write content exceeds the configured byte limit")
         parts = _safe_parts(path)
         with self._parent_fd(parts) as (parent_fd, name):
+            mode = 0o600
+            try:
+                existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISREG(existing.st_mode):
+                    mode = stat.S_IMODE(existing.st_mode)
             temporary = f".guarded-agent-write-{secrets.token_hex(16)}"
             temporary_fd = os.open(
                 temporary,
@@ -486,6 +379,7 @@ class ToolRegistry:
                 dir_fd=parent_fd,
             )
             try:
+                os.fchmod(temporary_fd, mode)
                 view = memoryview(encoded)
                 while view:
                     written = os.write(temporary_fd, view)
@@ -518,20 +412,17 @@ class ToolRegistry:
             self._parent_fd(source_parts) as (source_fd, source_name),
             self._parent_fd(destination_parts) as (destination_fd, destination_name),
         ):
-            source_stat = os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
-            if stat.S_ISDIR(source_stat.st_mode):
-                raise ValueError("move_file cannot move a directory")
-            os.replace(
+            _move_verified(
+                source_fd,
                 source_name,
+                destination_fd,
                 destination_name,
-                src_dir_fd=source_fd,
-                dst_dir_fd=destination_fd,
             )
             os.fsync(source_fd)
             if destination_fd != source_fd:
                 os.fsync(destination_fd)
 
-    def _save_memory(self, invocation: SaveMemoryInvocation, started: float) -> ToolResult:
+    def _save_memory(self, invocation: SaveMemoryAction, started: float) -> ToolResult:
         if self._memory_store is None or self._workspace_id is None:
             return self._failure(invocation.tool, "memory store is not configured", started)
         entry = self._memory_store.add(
@@ -544,7 +435,7 @@ class ToolRegistry:
         return self._success(invocation.tool, entry.id, started, changes=["memory"])
 
     def _retrieve_memory(
-        self, invocation: RetrieveMemoryInvocation, started: float
+        self, invocation: RetrieveMemoryAction, started: float
     ) -> ToolResult:
         if self._memory_store is None or self._workspace_id is None:
             return self._failure(invocation.tool, "memory store is not configured", started)
@@ -575,9 +466,48 @@ class ToolRegistry:
             os.close(current_fd)
             raise
 
-    def _open_target(self, parts: tuple[str, ...]) -> int:
+    def _open_target(self, parts: tuple[str, ...], flags: int) -> int:
         with self._parent_fd(parts) as (parent_fd, name):
-            return os.open(name, _FILE_READ_FLAGS, dir_fd=parent_fd)
+            return os.open(name, flags, dir_fd=parent_fd)
+
+    def _open_resolved_target(self, path: str, flags: int) -> int:
+        parts, expected = self._resolved_target(path)
+        return self._open_expected_target(parts, flags, expected)
+
+    def _open_expected_target(
+        self,
+        parts: tuple[str, ...],
+        flags: int,
+        expected: os.stat_result,
+    ) -> int:
+        descriptor = self._open_target(parts, flags)
+        actual = os.fstat(descriptor)
+        if (actual.st_dev, actual.st_ino, stat.S_IFMT(actual.st_mode)) != (
+            expected.st_dev,
+            expected.st_ino,
+            stat.S_IFMT(expected.st_mode),
+        ):
+            os.close(descriptor)
+            raise ValueError("target identity changed during secure open")
+        return descriptor
+
+    def _resolved_target(self, path: str) -> tuple[tuple[str, ...], os.stat_result]:
+        normalized = normalize_relative_posix(path)
+        if is_sensitive_path(normalized):
+            raise PolicyDenied("sensitive paths are unavailable to ordinary tools")
+        stable_root = self._stable_cwd().resolve(strict=True)
+        try:
+            resolved = stable_root.joinpath(*PurePosixPath(normalized).parts).resolve(strict=True)
+            relative = resolved.relative_to(stable_root)
+        except ValueError as error:
+            raise PolicyDenied("path resolves outside the workspace") from error
+        if relative == Path("."):
+            raise PolicyDenied("path must resolve strictly inside the workspace")
+        relative_posix = relative.as_posix()
+        if is_sensitive_path(relative_posix):
+            raise PolicyDenied("sensitive paths are unavailable to ordinary tools")
+        expected = os.stat(resolved, follow_symlinks=False)
+        return PurePosixPath(relative_posix).parts, expected
 
     @contextmanager
     def _parent_fd(self, parts: tuple[str, ...]) -> Iterator[tuple[int, str]]:
@@ -592,6 +522,15 @@ class ToolRegistry:
             raise ValueError("tool registry is closed")
         return Path(f"/proc/self/fd/{self._root_fd}")
 
+    def _git_prefix(self) -> list[str]:
+        return [
+            str(self._git_executable),
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ]
+
     def _success(
         self,
         tool: ToolName,
@@ -603,9 +542,8 @@ class ToolRegistry:
     ) -> ToolResult:
         if not stdout_truncated:
             output = _OutputBuffer(self._settings.max_output_bytes)
-            output.add(self._redactor.redact(stdout).encode())
-            stdout = output.text()
-            stdout_truncated = output.truncated
+            output.add(stdout.encode())
+            stdout, stdout_truncated = self._finish_output(output)
         return ToolResult(
             tool=tool,
             exit_code=0,
@@ -619,14 +557,15 @@ class ToolRegistry:
 
     def _failure(self, tool: ToolName, message: str, started: float) -> ToolResult:
         output = _OutputBuffer(self._settings.max_output_bytes)
-        output.add(self._redactor.redact(message).encode())
+        output.add(message.encode())
+        stderr, stderr_truncated = self._finish_output(output)
         return ToolResult(
             tool=tool,
             exit_code=None,
             stdout="",
-            stderr=output.text(),
+            stderr=stderr,
             stdout_truncated=False,
-            stderr_truncated=output.truncated,
+            stderr_truncated=stderr_truncated,
             duration_ms=_duration_ms(started),
             changes=[],
         )
@@ -642,6 +581,15 @@ class ToolRegistry:
             stderr_truncated=result.stderr_truncated,
             duration_ms=result.duration_ms,
             changes=[],
+        )
+
+    def _finish_output(self, output: _OutputBuffer) -> tuple[str, bool]:
+        head, tail = output.segments()
+        return self._redactor.redact_bounded(
+            head.decode("utf-8", errors="replace"),
+            tail.decode("utf-8", errors="replace"),
+            limit_bytes=self._settings.max_output_bytes,
+            truncated=output.truncated,
         )
 
 
@@ -675,12 +623,8 @@ class _OutputBuffer:
     def note_omitted(self, byte_count: int) -> None:
         self._total += byte_count
 
-    def text(self) -> str:
-        if self.truncated:
-            raw = bytes(self._head) + b"\n... output truncated ...\n" + bytes(self._tail)
-        else:
-            raw = bytes(self._head + self._tail)
-        return raw.decode("utf-8", errors="replace")
+    def segments(self) -> tuple[bytes, bytes]:
+        return bytes(self._head), bytes(self._tail)
 
 
 def _safe_parts(path: str) -> tuple[str, ...]:
@@ -688,6 +632,148 @@ def _safe_parts(path: str) -> tuple[str, ...]:
     if is_sensitive_path(normalized):
         raise PolicyDenied("sensitive paths are unavailable to ordinary tools")
     return PurePosixPath(normalized).parts
+
+
+def _open_workspace_root(
+    canonical_workspace: Path,
+    *,
+    before_open: Callable[[], None] | None = None,
+) -> int:
+    """Reopen one canonical absolute directory without following any path component."""
+    if not canonical_workspace.is_absolute():
+        raise ValueError("canonical workspace must be absolute")
+    expected = os.stat(canonical_workspace, follow_symlinks=False)
+    if not stat.S_ISDIR(expected.st_mode):
+        raise ValueError("workspace must be a directory")
+    if before_open is not None:
+        before_open()
+
+    current_fd = os.open("/", _DIRECTORY_FLAGS)
+    try:
+        for component in canonical_workspace.parts[1:]:
+            next_fd = os.open(component, _DIRECTORY_FLAGS, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        actual = os.fstat(current_fd)
+        if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError("workspace identity changed during secure open")
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _move_verified(
+    source_fd: int,
+    source_name: str,
+    destination_fd: int,
+    destination_name: str,
+    *,
+    before_rename: Callable[[], None] | None = None,
+) -> None:
+    """Verify the source leaf around rename and fail closed on identity changes."""
+    source_handle = os.open(
+        source_name,
+        os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=source_fd,
+    )
+    try:
+        captured = os.fstat(source_handle)
+        if stat.S_ISDIR(captured.st_mode):
+            raise ValueError("move_file cannot move a directory")
+        if before_rename is not None:
+            before_rename()
+        current = os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
+        if _file_identity(current) != _file_identity(captured):
+            raise ValueError("move_file source identity changed before rename")
+
+        renamed = False
+        try:
+            os.replace(
+                source_name,
+                destination_name,
+                src_dir_fd=source_fd,
+                dst_dir_fd=destination_fd,
+            )
+            renamed = True
+            destination = os.stat(
+                destination_name,
+                dir_fd=destination_fd,
+                follow_symlinks=False,
+            )
+            if _file_identity(destination) != _file_identity(captured):
+                raise ValueError("move_file destination identity changed after rename")
+        except BaseException:
+            if renamed:
+                _rollback_move_if_unchanged(
+                    source_fd,
+                    source_name,
+                    destination_fd,
+                    destination_name,
+                    _file_identity(captured),
+                )
+            raise
+    finally:
+        os.close(source_handle)
+
+
+def _rollback_move_if_unchanged(
+    source_fd: int,
+    source_name: str,
+    destination_fd: int,
+    destination_name: str,
+    expected_identity: tuple[int, int, int],
+) -> None:
+    try:
+        destination = os.stat(
+            destination_name,
+            dir_fd=destination_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    try:
+        os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        return
+    if _file_identity(destination) != expected_identity:
+        return
+    try:
+        os.replace(
+            destination_name,
+            source_name,
+            src_dir_fd=destination_fd,
+            dst_dir_fd=source_fd,
+        )
+    except OSError:
+        pass
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode)
+
+
+def _resolve_git_executable(injected: Path | None) -> Path:
+    candidates: tuple[Path, ...]
+    if injected is not None:
+        candidates = (injected,)
+    else:
+        candidates = (Path("/usr/bin/git"), Path("/bin/git"))
+    trusted_parents = {Path("/usr/bin").resolve(), Path("/bin").resolve()}
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            candidate_stat = resolved.stat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(candidate_stat.st_mode) or not os.access(resolved, os.X_OK):
+            continue
+        if injected is None and resolved.parent not in trusted_parents:
+            continue
+        return resolved
+    raise ValueError("trusted Git executable is unavailable")
 
 
 def _duration_ms(started: float) -> int:

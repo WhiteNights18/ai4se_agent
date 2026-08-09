@@ -48,3 +48,15 @@ def test_redactor_representation_does_not_expose_registered_secrets() -> None:
     redactor = Redactor(["sk-secret-value"])
 
     assert "sk-secret-value" not in repr(redactor)
+
+
+def test_truncated_redaction_removes_long_secret_fragments_but_keeps_short_text() -> None:
+    """Catch truncation-boundary fragments of four or more characters remaining visible."""
+    redactor = Redactor(["super-secret-token", "key"])
+
+    redacted = redactor.redact_truncated("super-se normal et-token key")
+
+    assert "super-se" not in redacted
+    assert "et-token" not in redacted
+    assert "key" not in redacted
+    assert "normal" in redacted

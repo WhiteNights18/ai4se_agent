@@ -1,9 +1,19 @@
 """Strict, JSON-serializable contracts shared between application modules."""
 
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    RootModel,
+    StrictInt,
+    StrictStr,
+    StringConstraints,
+    TypeAdapter,
+)
 
 
 class ToolName(str, Enum):
@@ -55,9 +65,183 @@ class StrictDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Action(StrictDTO):
-    tool: ToolName
-    arguments: dict[str, JsonValue]
+PathArgument = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+TextArgument = Annotated[StrictStr, Field(min_length=1, max_length=65_536)]
+CommandArgument = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+CommandArgv = Annotated[list[CommandArgument], Field(min_length=1, max_length=128)]
+
+
+class ListDirectoryArguments(StrictDTO):
+    path: PathArgument
+
+
+class ReadFileArguments(StrictDTO):
+    path: PathArgument
+
+
+class SearchTextArguments(StrictDTO):
+    path: PathArgument
+    query: TextArgument
+    max_results: StrictInt = Field(default=100, ge=1, le=1000)
+
+
+class WriteFileArguments(StrictDTO):
+    path: PathArgument
+    content: StrictStr
+
+
+class DeleteFileArguments(StrictDTO):
+    path: PathArgument
+
+
+class MoveFileArguments(StrictDTO):
+    source: PathArgument
+    destination: PathArgument
+
+
+class GitStatusArguments(StrictDTO):
+    pass
+
+
+class GitDiffArguments(StrictDTO):
+    pass
+
+
+class RunCommandArguments(StrictDTO):
+    argv: CommandArgv
+
+
+class RunValidatorArguments(StrictDTO):
+    argv: CommandArgv
+
+
+class SaveMemoryArguments(StrictDTO):
+    category: TextArgument
+    content: TextArgument
+
+
+class RetrieveMemoryArguments(StrictDTO):
+    query: TextArgument
+    limit: StrictInt = Field(default=10, ge=1, le=100)
+
+
+class CompleteArguments(StrictDTO):
+    summary: Annotated[StrictStr, Field(max_length=65_536)] = ""
+
+
+class CannotContinueArguments(StrictDTO):
+    reason: TextArgument
+
+
+class ListDirectoryAction(StrictDTO):
+    tool: Literal[ToolName.LIST_DIRECTORY]
+    arguments: ListDirectoryArguments
+
+
+class ReadFileAction(StrictDTO):
+    tool: Literal[ToolName.READ_FILE]
+    arguments: ReadFileArguments
+
+
+class SearchTextAction(StrictDTO):
+    tool: Literal[ToolName.SEARCH_TEXT]
+    arguments: SearchTextArguments
+
+
+class WriteFileAction(StrictDTO):
+    tool: Literal[ToolName.WRITE_FILE]
+    arguments: WriteFileArguments
+
+
+class DeleteFileAction(StrictDTO):
+    tool: Literal[ToolName.DELETE_FILE]
+    arguments: DeleteFileArguments
+
+
+class MoveFileAction(StrictDTO):
+    tool: Literal[ToolName.MOVE_FILE]
+    arguments: MoveFileArguments
+
+
+class GitStatusAction(StrictDTO):
+    tool: Literal[ToolName.GIT_STATUS]
+    arguments: GitStatusArguments
+
+
+class GitDiffAction(StrictDTO):
+    tool: Literal[ToolName.GIT_DIFF]
+    arguments: GitDiffArguments
+
+
+class RunCommandAction(StrictDTO):
+    tool: Literal[ToolName.RUN_COMMAND]
+    arguments: RunCommandArguments
+
+
+class RunValidatorAction(StrictDTO):
+    tool: Literal[ToolName.RUN_VALIDATOR]
+    arguments: RunValidatorArguments
+
+
+class SaveMemoryAction(StrictDTO):
+    tool: Literal[ToolName.SAVE_MEMORY]
+    arguments: SaveMemoryArguments
+
+
+class RetrieveMemoryAction(StrictDTO):
+    tool: Literal[ToolName.RETRIEVE_MEMORY]
+    arguments: RetrieveMemoryArguments
+
+
+class CompleteAction(StrictDTO):
+    tool: Literal[ToolName.COMPLETE]
+    arguments: CompleteArguments
+
+
+class CannotContinueAction(StrictDTO):
+    tool: Literal[ToolName.CANNOT_CONTINUE]
+    arguments: CannotContinueArguments
+
+
+type ToolAction = Annotated[
+    ListDirectoryAction
+    | ReadFileAction
+    | SearchTextAction
+    | WriteFileAction
+    | DeleteFileAction
+    | MoveFileAction
+    | GitStatusAction
+    | GitDiffAction
+    | RunCommandAction
+    | RunValidatorAction
+    | SaveMemoryAction
+    | RetrieveMemoryAction
+    | CompleteAction
+    | CannotContinueAction,
+    Field(discriminator="tool"),
+]
+
+_TOOL_ACTION_ADAPTER: TypeAdapter[ToolAction] = TypeAdapter(ToolAction)
+
+
+def parse_tool_action(value: object) -> ToolAction:
+    """Parse the provider-facing strict discriminated action contract."""
+    return _TOOL_ACTION_ADAPTER.validate_python(value)
+
+
+class Action(RootModel[ToolAction]):
+    """Compatibility wrapper around the public strict ToolAction contract."""
+
+    @property
+    def tool(self) -> ToolName:
+        return self.root.tool
+
+    @property
+    def arguments(self) -> dict[str, JsonValue]:
+        return cast(
+            dict[str, JsonValue],
+            self.root.arguments.model_dump(mode="python", warnings=False),
+        )
 
 
 class ToolResult(StrictDTO):

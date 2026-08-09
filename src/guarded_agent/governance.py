@@ -18,6 +18,7 @@ from guarded_agent.domain import (
     GovernanceOutcome,
     Settings,
     TaskStatus,
+    ToolAction,
     ToolName,
 )
 from guarded_agent.paths import (
@@ -165,7 +166,7 @@ class GovernanceEngine:
     def task_id(self) -> str:
         return self._task_id
 
-    def canonical_targets(self, action: Action) -> tuple[Path, ...]:
+    def canonical_targets(self, action: Action | ToolAction) -> tuple[Path, ...]:
         """Return policy-checked canonical targets for a file action.
 
         This is a governance snapshot, not an execution-time TOCTOU guarantee. Task 5 must
@@ -179,7 +180,7 @@ class GovernanceEngine:
             for candidate in _file_path_values(action)
         )
 
-    def evaluate(self, action: Action) -> GovernanceDecision:
+    def evaluate(self, action: Action | ToolAction) -> GovernanceDecision:
         """Run the complete policy pipeline and fail closed on evaluation errors."""
         try:
             return self._evaluate(action)
@@ -198,7 +199,7 @@ class GovernanceEngine:
     def create_pending_approval(
         self,
         task_id: str,
-        action: Action,
+        action: Action | ToolAction,
         *,
         expires_at: datetime | None = None,
     ) -> Approval:
@@ -222,7 +223,7 @@ class GovernanceEngine:
     def authorize_persisted(
         self,
         task_id: str,
-        action: Action,
+        action: Action | ToolAction,
         approval_id: str,
         now: datetime,
     ) -> bool:
@@ -261,10 +262,9 @@ class GovernanceEngine:
         self._record_approval_mismatch(self.task_id, approval_id, cast(str, mismatch_reason))
         return False
 
-    def _evaluate(self, action: Action) -> GovernanceDecision:
+    def _evaluate(self, action: Action | ToolAction) -> GovernanceDecision:
         tool = action.tool
-        if not isinstance(action.arguments, dict):
-            raise TypeError("action arguments must be an object")
+        arguments = _action_arguments(action)
 
         if tool in _FILE_PATH_TOOLS or tool is ToolName.MOVE_FILE:
             self.canonical_targets(action)
@@ -273,7 +273,7 @@ class GovernanceEngine:
             return _decision(GovernanceOutcome.ALLOW, "read_only", "read-only action")
 
         if tool is ToolName.WRITE_FILE:
-            content = action.arguments.get("content")
+            content = arguments.get("content")
             if not isinstance(content, str):
                 raise TypeError("write content must be text")
             byte_limit = min(self.settings.max_output_bytes, 65_536)
@@ -291,14 +291,14 @@ class GovernanceEngine:
             )
 
         if tool is ToolName.SAVE_MEMORY:
-            _require_non_empty_text(action.arguments, "content")
-            _require_non_empty_text(action.arguments, "category")
+            _require_non_empty_text(arguments, "content")
+            _require_non_empty_text(arguments, "category")
             return self._approval_decision(
                 action, "memory_persistence", "persisting trusted memory requires approval"
             )
 
         if tool is ToolName.RUN_VALIDATOR:
-            argv = _validated_argv(action.arguments)
+            argv = _validated_argv(arguments)
             if _is_hard_denied(argv):
                 return _decision(
                     GovernanceOutcome.DENY,
@@ -335,8 +335,8 @@ class GovernanceEngine:
     def _enforce_candidate_path(self, candidate: str) -> None:
         self._canonicalize_candidate_path(candidate)
 
-    def _evaluate_command(self, action: Action) -> GovernanceDecision:
-        argv = _validated_argv(action.arguments)
+    def _evaluate_command(self, action: Action | ToolAction) -> GovernanceDecision:
+        argv = _validated_argv(_action_arguments(action))
         if _is_hard_denied(argv):
             return _decision(
                 GovernanceOutcome.DENY,
@@ -360,7 +360,9 @@ class GovernanceEngine:
             action, "command_requires_approval", "command argv requires approval"
         )
 
-    def _approval_decision(self, action: Action, rule_id: str, reason: str) -> GovernanceDecision:
+    def _approval_decision(
+        self, action: Action | ToolAction, rule_id: str, reason: str
+    ) -> GovernanceDecision:
         digest = action_digest(
             task_id=self.task_id,
             action=action,
@@ -406,7 +408,7 @@ class GovernanceEngine:
 def action_digest(
     *,
     task_id: str,
-    action: Action,
+    action: Action | ToolAction,
     workspace: Path,
     policy_version: str = "1.0",
 ) -> str:
@@ -429,9 +431,9 @@ def action_digest(
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
-def _normalized_arguments(action: Action) -> dict[str, JsonValue]:
+def _normalized_arguments(action: Action | ToolAction) -> dict[str, JsonValue]:
     normalized: dict[str, JsonValue] = {}
-    for key, value in action.arguments.items():
+    for key, value in _action_arguments(action).items():
         if key in _PATH_ARGUMENT_KEYS:
             if not isinstance(value, str):
                 raise TypeError(f"{key} must be a path string")
@@ -441,8 +443,8 @@ def _normalized_arguments(action: Action) -> dict[str, JsonValue]:
     return normalized
 
 
-def _file_path_values(action: Action) -> list[str]:
-    arguments = action.arguments
+def _file_path_values(action: Action | ToolAction) -> list[str]:
+    arguments = _action_arguments(action)
     if action.tool is ToolName.MOVE_FILE:
         source = arguments.get("source", arguments.get("source_path"))
         destination = arguments.get("destination", arguments.get("destination_path"))
@@ -461,6 +463,15 @@ def _require_non_empty_text(arguments: dict[str, JsonValue], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise TypeError(f"{key} must be non-empty text")
     return value
+
+
+def _action_arguments(action: Action | ToolAction) -> dict[str, JsonValue]:
+    if isinstance(action, Action):
+        return action.arguments
+    return cast(
+        dict[str, JsonValue],
+        action.arguments.model_dump(mode="python", warnings=False),
+    )
 
 
 def _validated_argv(arguments: dict[str, JsonValue]) -> list[str]:
