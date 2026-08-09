@@ -7,9 +7,10 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from threading import RLock
 from typing import Self, cast
 from uuid import uuid4
 
@@ -24,6 +25,24 @@ class ApprovalStatus(str, Enum):
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
     CONSUMED = "CONSUMED"
+
+
+class InvalidTaskTransitionError(ValueError):
+    """Raised when a requested task lifecycle transition is not permitted."""
+
+
+_ALLOWED_TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
+    TaskStatus.CREATED: frozenset({TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}),
+    TaskStatus.RUNNING: frozenset(
+        {TaskStatus.WAITING_APPROVAL, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    ),
+    TaskStatus.WAITING_APPROVAL: frozenset(
+        {TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    ),
+    TaskStatus.COMPLETED: frozenset(),
+    TaskStatus.FAILED: frozenset(),
+    TaskStatus.CANCELLED: frozenset(),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +118,7 @@ class Database:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        self._lock = RLock()
         self.tasks = TaskStore(self)
         self.audit = AuditStore(self)
         self.approvals = ApprovalStore(self)
@@ -108,7 +128,7 @@ class Database:
 
     @classmethod
     def open(cls, path: str | Path) -> Database:
-        connection = sqlite3.connect(Path(path), isolation_level=None)
+        connection = sqlite3.connect(Path(path), isolation_level=None, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         _create_schema(connection)
@@ -121,17 +141,25 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._connection
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+            else:
+                self._connection.execute("COMMIT")
+
+    @contextmanager
+    def operation(self) -> Iterator[sqlite3.Connection]:
+        """Serialize a single connection operation outside an explicit transaction."""
+        with self._lock:
             yield self._connection
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
-        else:
-            self._connection.execute("COMMIT")
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()
 
     def __enter__(self) -> Self:
         return self
@@ -224,10 +252,11 @@ class TaskStore:
         created_at = _now()
         workspace = Workspace(workspace_id or str(uuid4()), canonical_path, name, created_at)
         try:
-            self._database.connection.execute(
-                "INSERT INTO workspaces VALUES (?, ?, ?, ?)",
-                (workspace.id, workspace.canonical_path, workspace.name, _timestamp(workspace.created_at)),
-            )
+            with self._database.operation() as connection:
+                connection.execute(
+                    "INSERT INTO workspaces VALUES (?, ?, ?, ?)",
+                    (workspace.id, workspace.canonical_path, workspace.name, _timestamp(workspace.created_at)),
+                )
         except sqlite3.IntegrityError as error:
             raise ValueError("workspace already exists") from error
         return workspace
@@ -253,27 +282,29 @@ class TaskStore:
             created_at,
         )
         try:
-            self._database.connection.execute(
-                """INSERT INTO tasks
-                   (id, workspace_id, goal, status, acceptance_commands, limits, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    task.id,
-                    task.workspace_id,
-                    task.goal,
-                    task.status.value,
-                    _json(task.acceptance_commands),
-                    _json(task.limits),
-                    _timestamp(task.created_at),
-                    _timestamp(task.updated_at),
-                ),
-            )
+            with self._database.operation() as connection:
+                connection.execute(
+                    """INSERT INTO tasks
+                       (id, workspace_id, goal, status, acceptance_commands, limits, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        task.id,
+                        task.workspace_id,
+                        task.goal,
+                        task.status.value,
+                        _json(task.acceptance_commands),
+                        _json(task.limits),
+                        _timestamp(task.created_at),
+                        _timestamp(task.updated_at),
+                    ),
+                )
         except sqlite3.IntegrityError as error:
             raise ValueError("task or workspace does not exist") from error
         return task
 
     def get(self, task_id: str) -> Task:
-        row = self._database.connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        with self._database.operation() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(f"task not found: {task_id}")
         return _task_from_row(row)
@@ -289,12 +320,22 @@ class TaskStore:
     ) -> Task:
         updated_at = _now()
         with self._database.transaction() as connection:
+            row = connection.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"task not found: {task_id}")
+            current_status = TaskStatus(cast(str, row["status"]))
+            if status not in _ALLOWED_TASK_TRANSITIONS[current_status]:
+                raise InvalidTaskTransitionError(
+                    f"cannot transition task from {current_status.value} to {status.value}"
+                )
             changed = connection.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                (status.value, _timestamp(updated_at), task_id),
+                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                (status.value, _timestamp(updated_at), task_id, current_status.value),
             ).rowcount
             if changed != 1:
-                raise KeyError(f"task not found: {task_id}")
+                raise InvalidTaskTransitionError(
+                    f"cannot transition task from {current_status.value} to {status.value}"
+                )
             self._database.audit._append(
                 connection, task_id, event_type, payload, previous_digest, updated_at
             )
@@ -312,10 +353,18 @@ class TaskStore:
     ) -> str:
         turn_id = str(uuid4())
         try:
-            self._database.connection.execute(
-                """INSERT INTO agent_turns VALUES (?, ?, ?, ?, ?, ?)""",
-                (turn_id, task_id, turn_no, _json(action_json), _json(feedback_json), _timestamp(_now())),
-            )
+            with self._database.operation() as connection:
+                connection.execute(
+                    """INSERT INTO agent_turns VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        turn_id,
+                        task_id,
+                        turn_no,
+                        _json(action_json),
+                        _json(feedback_json),
+                        _timestamp(_now()),
+                    ),
+                )
         except sqlite3.IntegrityError as error:
             raise ValueError("task does not exist or turn number is already recorded") from error
         return turn_id
@@ -330,18 +379,19 @@ class TaskStore:
     ) -> str:
         execution_id = str(uuid4())
         try:
-            self._database.connection.execute(
-                "INSERT INTO tool_executions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    execution_id,
-                    turn_id,
-                    tool,
-                    _json(normalized_args),
-                    _json(result),
-                    duration_ms,
-                    _timestamp(_now()),
-                ),
-            )
+            with self._database.operation() as connection:
+                connection.execute(
+                    "INSERT INTO tool_executions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        execution_id,
+                        turn_id,
+                        tool,
+                        _json(normalized_args),
+                        _json(result),
+                        duration_ms,
+                        _timestamp(_now()),
+                    ),
+                )
         except sqlite3.IntegrityError as error:
             raise ValueError("turn does not exist") from error
         return execution_id
@@ -388,13 +438,16 @@ class AuditStore:
                 ),
             )
         except sqlite3.IntegrityError as error:
-            raise ValueError("task does not exist") from error
+            if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+                raise ValueError("task does not exist") from error
+            raise
         return event
 
     def list_for_task(self, task_id: str) -> list[AuditEvent]:
-        rows = self._database.connection.execute(
-            "SELECT * FROM audit_events WHERE task_id = ? ORDER BY created_at, id", (task_id,)
-        ).fetchall()
+        with self._database.operation() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events WHERE task_id = ? ORDER BY created_at, id", (task_id,)
+            ).fetchall()
         return [_audit_from_row(row) for row in rows]
 
 
@@ -411,8 +464,9 @@ class ApprovalStore:
         summary: str,
         expires_at: datetime | None = None,
     ) -> Approval:
-        if self._database.connection.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
-            raise ValueError(f"task does not exist: {task_id}")
+        created_at = _now()
+        expiry = expires_at or created_at + timedelta(minutes=10)
+        expiry_value = _timestamp(expiry)
         approval = Approval(
             str(uuid4()),
             task_id,
@@ -420,30 +474,32 @@ class ApprovalStore:
             policy_version,
             summary,
             ApprovalStatus.PENDING,
-            expires_at,
+            expiry,
             None,
             None,
         )
-        self._database.connection.execute(
-            "INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                approval.id,
-                approval.task_id,
-                approval.action_digest,
-                approval.policy_version,
-                approval.summary,
-                approval.status.value,
-                _timestamp(approval.expires_at) if approval.expires_at else None,
-                None,
-                None,
-            ),
-        )
+        with self._database.transaction() as connection:
+            if connection.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+                raise ValueError(f"task does not exist: {task_id}")
+            connection.execute(
+                "INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    approval.id,
+                    approval.task_id,
+                    approval.action_digest,
+                    approval.policy_version,
+                    approval.summary,
+                    approval.status.value,
+                    expiry_value,
+                    None,
+                    None,
+                ),
+            )
         return approval
 
     def get(self, approval_id: str) -> Approval:
-        row = self._database.connection.execute(
-            "SELECT * FROM approvals WHERE id = ?", (approval_id,)
-        ).fetchone()
+        with self._database.operation() as connection:
+            row = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         if row is None:
             raise KeyError(f"approval not found: {approval_id}")
         return _approval_from_row(row)

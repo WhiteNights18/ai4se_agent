@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from guarded_agent.memory import MemoryStore
+from guarded_agent.memory import MemorySource, MemoryStore, MemoryTrust
 from guarded_agent.storage import Database
 
 
@@ -38,3 +38,28 @@ def test_model_content_cannot_be_recorded_as_confirmed_memory(memory: MemoryStor
     """Catch an unverified model guess being promoted to trusted workspace memory."""
     with pytest.raises(ValueError, match="model"):
         memory.add("w1", "convention", "Use an imaginary linter", "model", "confirmed")
+
+
+@pytest.mark.parametrize("source", ["model", "assistant", "gpt", "model_generated", "unknown"])
+def test_confirmed_memory_accepts_only_human_or_task_summary_sources(
+    memory: MemoryStore, source: str
+) -> None:
+    """Catch model-like or unknown content crossing the confirmed-memory trust boundary."""
+    with pytest.raises(ValueError, match="confirmed"):
+        memory.add("w1", "convention", "Unverified convention", source, "confirmed")
+
+
+def test_memory_source_and_trust_are_closed_contracts(memory: MemoryStore) -> None:
+    """Catch free-form source and trust strings being persisted as trusted metadata."""
+    stored = memory.add(
+        "w1",
+        "convention",
+        "Use Ruff",
+        MemorySource.TASK_SUMMARY,
+        MemoryTrust.CONFIRMED,
+    )
+
+    assert stored.source is MemorySource.TASK_SUMMARY
+    assert stored.trust is MemoryTrust.CONFIRMED
+    with pytest.raises(ValueError, match="source"):
+        memory.add("w1", "convention", "Use Ruff", "operator", "unconfirmed")
