@@ -512,12 +512,25 @@ git commit -m "feat: expose cli and offline mechanism demo"
 - [ ] **Step 1: Write failing route/security tests**
 
 ```python
-def test_web_can_create_mock_task_and_show_timeline(client) -> None:
-    response = client.post("/tasks", data={
-        "goal": "fix it", "acceptance": "pytest -q", "_csrf": client.csrf_token
+@pytest.fixture
+def configured_client(tmp_path: Path):
+    (tmp_path / "guarded-agent.toml").write_text(
+        '[validation]\ncommands = [["pytest", "-q"]]\n'
+    )
+    return make_web_client(tmp_path)
+
+def test_web_can_create_mock_task_with_configured_validator(configured_client) -> None:
+    response = configured_client.post("/tasks", data={
+        "goal": "fix it", "validation_id": "validator-0", "_csrf": configured_client.csrf_token
     })
     assert response.status_code == 303
-    assert "Task timeline" in client.get(response.headers["location"]).text
+    assert "Task timeline" in configured_client.get(response.headers["location"]).text
+
+def test_web_rejects_arbitrary_validation_command(configured_client) -> None:
+    response = configured_client.post("/tasks", data={
+        "goal": "fix it", "validation_id": "pytest -q", "_csrf": configured_client.csrf_token
+    })
+    assert response.status_code == 422
 
 def test_settings_page_never_accepts_master_password(client) -> None:
     response = client.post("/settings", data={"master_password": "secret"})
