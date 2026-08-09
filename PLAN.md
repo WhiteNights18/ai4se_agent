@@ -469,6 +469,8 @@ git commit -m "feat: run the governed agent feedback loop"
 
 ### Task 8: CLI and deterministic mechanism demo
 
+**Status:** Complete — commit `f09d40d`; 309 tests and demo passing; review approved.
+
 **Files:**
 - Create: `src/guarded_agent/cli.py`, `src/guarded_agent/demo.py`, `src/guarded_agent/__main__.py`
 - Create: `tests/test_cli.py`, `tests/test_demo.py`
@@ -477,7 +479,7 @@ git commit -m "feat: run the governed agent feedback loop"
 - Consumes: `ApplicationService`, providers, credential vault
 - Produces: `guarded-agent run|web|demo|credential|memory|version`
 
-- [ ] **Step 1: Write failing CLI and demo tests**
+- [x] **Step 1: Write failing CLI and demo tests**
 
 ```python
 def test_demo_runs_three_offline_scenarios(cli_runner) -> None:
@@ -488,23 +490,23 @@ def test_demo_runs_three_offline_scenarios(cli_runner) -> None:
     assert "approval tampering blocked" in result.stdout
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/test_cli.py tests/test_demo.py -q`
 
 Expected: CLI module missing.
 
-- [ ] **Step 3: Implement commands and isolated demo fixtures**
+- [x] **Step 3: Implement commands and isolated demo fixtures**
 
 Use Typer, hidden terminal input for secrets, explicit provider selection, non-zero exits for invalid workspace/config/verification. Demo creates a temporary repository and uses scripted Mock LLM only; it must not alter the caller's working tree.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `pytest tests/test_cli.py tests/test_demo.py -q && python -m guarded_agent demo`
 
 Expected: tests and three scenarios pass without network/key.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/cli.py src/guarded_agent/demo.py src/guarded_agent/__main__.py tests/test_cli.py tests/test_demo.py
@@ -514,6 +516,8 @@ git commit -m "feat: expose cli and offline mechanism demo"
 ---
 
 ### Task 9: Local WebUI
+
+**Status:** Complete — commits `2fa8eed`, `0aa75e4`, `3266620`, `be546cf`; 311 tests passing, 8 ASGI tests documented for Python 3.12; review approved.
 
 **Files:**
 - Create: `src/guarded_agent/web.py`
@@ -525,7 +529,7 @@ git commit -m "feat: expose cli and offline mechanism demo"
 - Consumes: `ApplicationService`, active workspace fixed at server startup
 - Produces: local HTML routes and JSON status polling endpoint
 
-- [ ] **Step 1: Write failing route/security tests**
+- [x] **Step 1: Write failing route/security tests**
 
 ```python
 @pytest.fixture
@@ -553,23 +557,23 @@ def test_settings_page_never_accepts_master_password(client) -> None:
     assert response.status_code == 422
 ```
 
-- [ ] **Step 2: Run test and verify RED**
+- [x] **Step 2: Run test and verify RED**
 
 Run: `pytest tests/test_web.py -q`
 
 Expected: web app missing.
 
-- [ ] **Step 3: Implement server-rendered pages and polling**
+- [x] **Step 3: Implement server-rendered pages and polling**
 
 Expose task list/create/detail/cancel, approval approve/reject, memory list/add/delete, settings/status, and `/api/tasks/{id}/status`. At startup load project validation commands and render them as the only selectable acceptance choices; reject arbitrary acceptance text. Validate CSRF token for state changes, escape output, fix workspace at startup, and redact all displayed payloads. The CLI must reject any host other than `127.0.0.1`.
 
-- [ ] **Step 4: Verify GREEN and accessibility basics**
+- [x] **Step 4: Verify GREEN and accessibility basics**
 
 Run: `pytest tests/test_web.py -q`
 
 Expected: routes, CSRF, local-bind validation, approval flow, cancellation, no secret fields, textual status labels and escaped output pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/web.py src/guarded_agent/templates src/guarded_agent/static tests/test_web.py
