@@ -32,7 +32,7 @@ class InvalidTaskTransitionError(ValueError):
 
 
 _ALLOWED_TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
-    TaskStatus.CREATED: frozenset({TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}),
+    TaskStatus.CREATED: frozenset({TaskStatus.RUNNING}),
     TaskStatus.RUNNING: frozenset(
         {TaskStatus.WAITING_APPROVAL, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
     ),

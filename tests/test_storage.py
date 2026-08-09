@@ -137,6 +137,18 @@ def test_task_status_transition_enforces_the_state_graph(db: Database) -> None:
         db.tasks.transition_status("t1", TaskStatus.RUNNING, event_type="resumed", payload={})
 
 
+@pytest.mark.parametrize("target", [TaskStatus.FAILED, TaskStatus.CANCELLED])
+def test_created_task_cannot_skip_directly_to_a_terminal_state(
+    db: Database, target: TaskStatus
+) -> None:
+    """Catch a created task bypassing the required RUNNING lifecycle state."""
+    with pytest.raises(InvalidTaskTransitionError, match="cannot transition task"):
+        db.tasks.transition_status("t1", target, event_type="task_stopped", payload={})
+
+    assert db.tasks.get("t1").status is TaskStatus.CREATED
+    assert db.audit.list_for_task("t1") == []
+
+
 def test_failed_audit_insert_rolls_back_its_task_transition(tmp_path: Path) -> None:
     """Catch a task state commit that survives failure to append its audit event."""
     path = tmp_path / "guarded-agent.sqlite3"
