@@ -10,6 +10,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+from guarded_agent.providers.mock import ScriptedMockProvider
+from guarded_agent.service import ApplicationService
+from guarded_agent.storage import Database
 from guarded_agent.web import create_web_app
 
 # Both Starlette TestClient and HTTPX ASGITransport hang for even a trivial app
@@ -139,3 +142,66 @@ def test_web_binds_only_localhost_and_fixed_workspace(tmp_path: Path) -> None:
     (tmp_path / "guarded-agent.toml").write_text("[validation]\ncommands = []\n")
     with pytest.raises(ValueError, match="127.0.0.1"):
         create_web_app(tmp_path, host="0.0.0.0")
+
+
+def test_web_approve_route_resumes_the_exact_pending_action(tmp_path: Path, monkeypatch) -> None:
+    async def scenario() -> None:
+        (tmp_path / "guarded-agent.toml").write_text("[validation]\ncommands = []\n")
+        app = create_web_app(tmp_path)
+        database = Database.open(tmp_path / ".guarded-agent" / "state.sqlite3")
+        service = ApplicationService(database)
+        task = service.create(
+            tmp_path,
+            "remove file",
+            [],
+            ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "missing.txt"}}),
+        )
+        assert service.run(task.id).value == "WAITING_APPROVAL"
+        approval_id = service.pending_approval_id(task.id)
+        resumed: list[tuple[str, str]] = []
+
+        def resume(self, task_id: str, supplied_approval_id: str):
+            resumed.append((task_id, supplied_approval_id))
+            return database.tasks.get(task_id).status
+
+        monkeypatch.setattr(ApplicationService, "resume", resume)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/")
+            response = await client.post(
+                f"/approvals/{approval_id}/approve", data={"_csrf": client.cookies["csrf_token"]}
+            )
+            assert response.status_code == 200
+        assert resumed == [(task.id, approval_id)]
+        assert database.approvals.get(approval_id).status.value == "APPROVED"
+        database.close()
+
+    asyncio.run(scenario())
+
+
+def test_web_reject_route_records_feedback_and_returns_to_running(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "guarded-agent.toml").write_text("[validation]\ncommands = []\n")
+        app = create_web_app(tmp_path)
+        database = Database.open(tmp_path / ".guarded-agent" / "state.sqlite3")
+        service = ApplicationService(database)
+        task = service.create(
+            tmp_path,
+            "remove file",
+            [],
+            ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "missing.txt"}}),
+        )
+        assert service.run(task.id).value == "WAITING_APPROVAL"
+        approval_id = service.pending_approval_id(task.id)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/")
+            response = await client.post(
+                f"/approvals/{approval_id}/reject", data={"_csrf": client.cookies["csrf_token"]}
+            )
+            assert response.status_code == 200
+        assert database.tasks.get(task.id).status.value == "RUNNING"
+        assert database.tasks.list_turns(task.id)[-1].feedback_json["message"] == "approval was rejected by the user"
+        database.close()
+
+    asyncio.run(scenario())

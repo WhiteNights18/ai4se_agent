@@ -130,6 +130,73 @@ def test_cancel_moves_a_created_task_through_running_to_cancelled(tmp_path: Path
     database.close()
 
 
+def test_reject_approval_does_not_mutate_for_a_non_pending_approval(tmp_path: Path) -> None:
+    """Catch a rejection endpoint that resumes a task for a historical approval ID."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "obsolete.txt").write_text("obsolete")
+    database = Database.open(tmp_path / "agent.sqlite3")
+    service = ApplicationService(database)
+    task = service.create(
+        workspace,
+        "remove obsolete file",
+        [],
+        ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "obsolete.txt"}}),
+    )
+    assert service.run(task.id) is TaskStatus.WAITING_APPROVAL
+    pending_id = service.pending_approval_id(task.id)
+    historical = database.approvals.create_pending(
+        task_id=task.id, action_digest="historical", policy_version="v1", summary="old approval"
+    )
+
+    try:
+        service.reject_approval(task.id, historical.id)
+    except ValueError as error:
+        assert "pending" in str(error)
+    else:
+        raise AssertionError("historical approval was accepted")
+
+    assert database.tasks.get(task.id).status is TaskStatus.WAITING_APPROVAL
+    assert service.pending_approval_id(task.id) == pending_id
+    database.close()
+
+
+def test_reject_approval_rejects_missing_or_non_pending_current_id(tmp_path: Path) -> None:
+    """Catch rejection paths that mutate a paused task after approval lookup fails."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "obsolete.txt").write_text("obsolete")
+    database = Database.open(tmp_path / "agent.sqlite3")
+    service = ApplicationService(database)
+    task = service.create(
+        workspace,
+        "remove obsolete file",
+        [],
+        ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "obsolete.txt"}}),
+    )
+    assert service.run(task.id) is TaskStatus.WAITING_APPROVAL
+    pending_id = service.pending_approval_id(task.id)
+
+    try:
+        service.reject_approval(task.id, "does-not-exist")
+    except ValueError as error:
+        assert "pending" in str(error)
+    else:
+        raise AssertionError("missing approval ID was accepted")
+    assert database.tasks.get(task.id).status is TaskStatus.WAITING_APPROVAL
+
+    database.approvals.approve(pending_id, datetime.now(UTC))
+    try:
+        service.reject_approval(task.id, pending_id)
+    except ValueError as error:
+        assert "not pending" in str(error)
+    else:
+        raise AssertionError("approved approval was rejected again")
+    assert database.tasks.get(task.id).status is TaskStatus.WAITING_APPROVAL
+    assert database.approvals.get(pending_id).status is ApprovalStatus.APPROVED
+    database.close()
+
+
 def test_resume_at_max_turns_does_not_consume_or_execute_pending_action(tmp_path: Path) -> None:
     """Catch resume consuming approval after the task has exhausted its turn budget."""
     workspace = tmp_path / "workspace"
