@@ -68,6 +68,17 @@ def engine(tmp_path: Path) -> Iterator[GovernanceEngine]:
         ["tcsh", "-c", "rm -rf /"],
         ["ksh", "-c", "rm -rf /"],
         ["ash", "-c", "rm -rf /"],
+        ["mksh", "-c", "rm -rf /"],
+        ["yash", "-c", "rm -rf /"],
+        ["pwsh", "-Command", "Remove-Item C:\\"],
+        ["PowerShell", "-Command", "Remove-Item C:\\"],
+        ["busybox", "sh", "-c", "rm -rf /"],
+        ["/bin/busybox", "ash", "-c", "rm -rf /"],
+        ["busybox", "hush", "-c", "rm -rf /"],
+        ["git", "push", "-f", "origin", "main"],
+        ["git", "push", "-fv", "origin", "main"],
+        ["/usr/bin/git", "push", "-vf", "origin", "main"],
+        ["./git", "push", "-f", "origin", "main"],
         ["rm", "-rf", "/"],
     ],
 )
@@ -184,25 +195,43 @@ def test_validator_allowlist_is_an_immutable_startup_snapshot(engine: Governance
 @pytest.mark.parametrize(
     "argv",
     [
-        ["rg", "TODO", "first.py"],
-        ["rg", "-n", "-i", "TODO", "first.py", "second.py"],
-        ["rg", "TODO", "--line-number", "first.py"],
-        ["rg", "--fixed-strings", "bash", "first.py"],
         ["git", "status"],
         ["git", "status", "--short", "--branch"],
         ["git", "status", "--porcelain=v2", "--", "src"],
-        ["git", "diff", "--", "first.py"],
-        ["git", "diff", "--stat", "--cached", "--", "first.py", "second.py"],
     ],
 )
-def test_exact_read_commands_are_allowed(argv: list[str], engine: GovernanceEngine) -> None:
-    """Catch the narrow read-only argv allowlist being lost to the approval fallback."""
-    (engine.workspace / "first.py").write_text("first", encoding="utf-8")
-    (engine.workspace / "second.py").write_text("second", encoding="utf-8")
+def test_only_exact_git_status_read_commands_are_allowed(
+    argv: list[str], engine: GovernanceEngine
+) -> None:
+    """Catch the sole command-level read allowlist being lost to the approval fallback."""
     decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
 
     assert decision.outcome is GovernanceOutcome.ALLOW
     assert decision.rule_id == "approved_read_command"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["rg", "TODO", "first.py"],
+        ["rg", "-n", "-i", "TODO", "first.py", "second.py"],
+        ["rg", "TODO", "--line-number", "first.py"],
+        ["rg", "--fixed-strings", "bash", "first.py"],
+        ["git", "diff", "--", "first.py"],
+        ["git", "diff", "--stat", "--cached", "--", "first.py", "second.py"],
+    ],
+)
+def test_rg_and_git_diff_always_require_approval(
+    argv: list[str], engine: GovernanceEngine
+) -> None:
+    """Catch file-reading subprocesses bypassing approval before Task 5 secure opens exist."""
+    (engine.workspace / "first.py").write_text("first", encoding="utf-8")
+    (engine.workspace / "second.py").write_text("second", encoding="utf-8")
+
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert decision.rule_id == "command_requires_approval"
 
 
 @pytest.mark.parametrize(
@@ -251,6 +280,8 @@ def test_non_allowlisted_commands_require_approval(argv: list[str], engine: Gove
         ["/usr/bin/git", "status"],
         ["./git", "diff", "--", "src"],
         ["printf", "git", "reset", "--hard"],
+        ["printf", "git", "push", "-f"],
+        ["busybox", "ls", "src"],
     ],
 )
 def test_path_qualified_read_lookalikes_require_approval(
@@ -283,7 +314,7 @@ def test_safe_read_grammar_still_hard_denies_unsafe_pathspecs(
     assert decision.rule_id in {"workspace_boundary", "sensitive_path"}
 
 
-def test_rg_auto_allow_requires_explicit_existing_regular_file_targets(
+def test_rg_expansive_or_implicit_targets_require_approval(
     engine: GovernanceEngine,
 ) -> None:
     """Catch recursive or semantic expansion entering the automatic read tier."""
@@ -307,7 +338,7 @@ def test_rg_auto_allow_requires_explicit_existing_regular_file_targets(
         assert decision.rule_id == "command_requires_approval"
 
 
-def test_git_diff_auto_allow_requires_literal_existing_regular_files(
+def test_git_diff_non_literal_or_implicit_targets_require_approval(
     engine: GovernanceEngine,
 ) -> None:
     """Catch repo-wide, directory, missing, or magic pathspec expansion entering auto-read."""
@@ -331,6 +362,28 @@ def test_git_diff_auto_allow_requires_literal_existing_regular_files(
         assert decision.rule_id == "command_requires_approval"
 
 
+@pytest.mark.parametrize("tool", ["rg", "git"])
+def test_symlink_swap_never_enters_unapproved_command_read_tier(
+    tool: str, engine: GovernanceEngine
+) -> None:
+    """Catch a canonicalization snapshot being mistaken for an execution-time safe open."""
+    first = engine.workspace / "first.py"
+    second = engine.workspace / "second.py"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    alias = engine.workspace / "alias.py"
+    alias.symlink_to(first)
+    argv = ["rg", "first", "alias.py"] if tool == "rg" else ["git", "diff", "--", "alias.py"]
+
+    before = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+    alias.unlink()
+    alias.symlink_to(second)
+    after = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert before.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert after.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -344,6 +397,13 @@ def test_git_diff_auto_allow_requires_literal_existing_regular_files(
         ["tcsh", "-c", "rm -rf /"],
         ["ksh", "-c", "rm -rf /"],
         ["ash", "-c", "rm -rf /"],
+        ["mksh", "-c", "rm -rf /"],
+        ["yash", "-c", "rm -rf /"],
+        ["pwsh", "-Command", "Remove-Item C:\\"],
+        ["busybox", "bash", "-c", "rm -rf /"],
+        ["busybox", "dash", "-c", "rm -rf /"],
+        ["git", "push", "-fv", "origin", "main"],
+        ["/usr/bin/git", "push", "-f", "origin", "main"],
         ["rm", "-rf", "/"],
     ],
 )

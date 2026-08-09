@@ -114,6 +114,7 @@ _GIT_DIFF_SAFE_FLAGS = {
     "--full-index",
     "--no-color",
 }
+_BUSYBOX_SHELL_APPLETS = {"sh", "ash", "bash", "dash", "hush"}
 
 
 class _SensitivePathDenied(PolicyDenied):
@@ -346,10 +347,9 @@ class GovernanceEngine:
         if not _contains_shell_syntax(argv):
             read_paths = _approved_read_command_paths(argv)
             if read_paths is not None:
-                resolved_paths: list[Path] = []
                 for candidate in read_paths:
-                    resolved_paths.append(self._canonicalize_candidate_path(candidate))
-                if _is_semantically_bounded_read(argv, read_paths, resolved_paths):
+                    self._enforce_candidate_path(candidate)
+                if argv[0:2] == ["git", "status"]:
                     return _decision(
                         GovernanceOutcome.ALLOW,
                         "approved_read_command",
@@ -477,8 +477,16 @@ def _validated_argv(arguments: dict[str, JsonValue]) -> list[str]:
 
 
 def _is_hard_denied(argv: list[str]) -> bool:
-    executable = Path(argv[0]).name
-    if executable in _HARD_DENIED_EXECUTABLES:
+    executable = Path(argv[0]).name.lower()
+    if (
+        executable in _HARD_DENIED_EXECUTABLES
+        or executable.endswith(("sh", "powershell"))
+        or (
+            executable == "busybox"
+            and len(argv) > 1
+            and argv[1].lower() in _BUSYBOX_SHELL_APPLETS
+        )
+    ):
         return True
     if argv[0] == "rg" and any(_is_rg_hard_option(argument) for argument in argv[1:]):
         return True
@@ -493,11 +501,17 @@ def _is_hard_denied(argv: list[str]) -> bool:
             return True
         if subcommand == "clean":
             return True
-        if subcommand == "push" and "--force" in arguments:
+        if subcommand == "push" and any(_is_force_push_option(argument) for argument in arguments):
             return True
         if subcommand == "checkout" and "--" in arguments:
             return True
     return executable == "rm" and any(argument == "/" for argument in argv[1:])
+
+
+def _is_force_push_option(argument: str) -> bool:
+    return argument == "--force" or (
+        argument.startswith("-") and not argument.startswith("--") and "f" in argument[1:]
+    )
 
 
 def _git_subcommand(argv: list[str]) -> tuple[str, list[str]] | None:
@@ -545,32 +559,6 @@ def _approved_read_command_paths(argv: list[str]) -> list[str] | None:
     if argv[1] == "diff":
         return _git_read_paths(argv[2:], _is_safe_git_diff_flag)
     return None
-
-
-def _is_semantically_bounded_read(
-    argv: list[str], submitted_paths: list[str], resolved_paths: list[Path]
-) -> bool:
-    if argv[0] == "rg":
-        return (
-            argv[1] != "--files"
-            and bool(submitted_paths)
-            and not any(_has_expansion_syntax(path) for path in submitted_paths)
-            and all(path.is_file() for path in resolved_paths)
-        )
-    if argv[0:2] == ["git", "status"]:
-        return True
-    if argv[0:2] == ["git", "diff"]:
-        return (
-            "--" in argv[2:]
-            and bool(submitted_paths)
-            and not any(_has_expansion_syntax(path) for path in submitted_paths)
-            and all(path.is_file() for path in resolved_paths)
-        )
-    return False
-
-
-def _has_expansion_syntax(path: str) -> bool:
-    return any(character in path for character in (":", "*", "?", "[", "]"))
 
 
 def _is_rg_hard_option(argument: str) -> bool:
