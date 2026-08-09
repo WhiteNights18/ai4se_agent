@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A locally operated coding agent with deterministic governance."
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=43,<46",
     "pydantic>=2.10,<3",
 ]
 

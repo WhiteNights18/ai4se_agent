@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from guarded_agent.redaction import Redactor
+
+
+def test_redactor_removes_registered_secret() -> None:
+    redactor = Redactor(["sk-secret-value"])
+
+    redacted = redactor.redact("failed with sk-secret-value")
+
+    assert "sk-secret-value" not in redacted
+    assert redacted == "failed with [REDACTED]"
+
+
+def test_redactor_removes_every_occurrence_and_prefers_longest_secret() -> None:
+    redactor = Redactor(["token", "token-with-suffix"])
+
+    redacted = redactor.redact("token-with-suffix and token and token-with-suffix")
+
+    assert redacted == "[REDACTED] and [REDACTED] and [REDACTED]"
+
+
+def test_redactor_ignores_empty_secrets_without_changing_unrelated_text() -> None:
+    redactor = Redactor(["", "sk-secret-value"])
+
+    assert redactor.redact("ordinary output") == "ordinary output"
+
+
+def test_redactor_representation_does_not_expose_registered_secrets() -> None:
+    redactor = Redactor(["sk-secret-value"])
+
+    assert "sk-secret-value" not in repr(redactor)
