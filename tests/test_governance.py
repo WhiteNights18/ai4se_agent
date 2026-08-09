@@ -1,0 +1,386 @@
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from guarded_agent.domain import Action, GovernanceOutcome, Settings, TaskStatus, ToolName
+from guarded_agent.governance import GovernanceEngine, Policy, action_digest
+from guarded_agent.paths import PolicyDenied
+from guarded_agent.storage import ApprovalStatus, Database
+
+
+def action(tool: ToolName, **arguments: object) -> Action:
+    return Action.model_validate({"tool": tool, "arguments": arguments})
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Iterator[GovernanceEngine]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    database = Database.open(tmp_path / "governance.sqlite3")
+    stored_workspace = database.tasks.create_workspace(str(workspace.resolve()), "workspace")
+    database.tasks.create_task(
+        task_id="t1",
+        workspace_id=stored_workspace.id,
+        goal="govern safely",
+        acceptance_commands=[],
+        limits={},
+    )
+    governance = GovernanceEngine(
+        workspace=workspace,
+        settings=Settings(validation_commands=[["pytest", "-q"]]),
+        database=database,
+        task_id="t1",
+    )
+    yield governance
+    database.close()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sudo", "id"],
+        ["doas", "id"],
+        ["shutdown", "-h", "now"],
+        ["git", "reset", "--hard"],
+        ["git", "-C", "src", "reset", "--hard"],
+        ["git", "clean", "-fd"],
+        ["git", "push", "--force", "origin", "main"],
+        ["git", "checkout", "--", "src"],
+        ["rm", "-rf", "/"],
+    ],
+)
+def test_hard_denials_have_no_approval(argv: list[str], engine: GovernanceEngine) -> None:
+    """Catch non-approvable commands falling through to the approval tier."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "hard_denied_command"
+    assert decision.action_digest is None
+    assert decision.approval_id is None
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (ToolName.READ_FILE, {"path": ".git/config"}),
+        (ToolName.WRITE_FILE, {"path": ".env.local", "content": "x"}),
+        (ToolName.DELETE_FILE, {"path": "keys/id_rsa"}),
+        (
+            ToolName.MOVE_FILE,
+            {"source": "safe.txt", "destination": ".guarded-agent/credentials.db"},
+        ),
+    ],
+)
+def test_sensitive_names_are_hard_denied_for_every_file_operation(
+    tool: ToolName, arguments: dict[str, object], engine: GovernanceEngine
+) -> None:
+    """Catch a mutating file tool bypassing the same credential fence used for reads."""
+    decision = engine.evaluate(action(tool, **arguments))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "sensitive_path"
+
+
+def test_file_tool_matrix_distinguishes_reads_bounded_writes_and_destructive_changes(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch a tool being assigned a risk tier different from the compiled matrix."""
+    assert engine.evaluate(action(ToolName.READ_FILE, path="README.md")).rule_id == "read_only"
+    assert engine.evaluate(
+        action(ToolName.WRITE_FILE, path="result.txt", content="ok")
+    ).rule_id == "bounded_write"
+
+    deletion = engine.evaluate(action(ToolName.DELETE_FILE, path="old.py"))
+    movement = engine.evaluate(
+        action(ToolName.MOVE_FILE, source="old.py", destination="archive/old.py")
+    )
+    assert deletion.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert movement.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert deletion.rule_id == movement.rule_id == "destructive_file_change"
+
+
+def test_write_limit_is_measured_in_utf8_bytes_and_fails_closed(engine: GovernanceEngine) -> None:
+    """Catch a character-count limit that admits content beyond the configured byte budget."""
+    engine.settings = Settings(max_output_bytes=3, validation_commands=[["pytest", "-q"]])
+
+    allowed = engine.evaluate(action(ToolName.WRITE_FILE, path="small.txt", content="abc"))
+    denied = engine.evaluate(action(ToolName.WRITE_FILE, path="large.txt", content="你好"))
+
+    assert allowed.outcome is GovernanceOutcome.ALLOW
+    assert denied.outcome is GovernanceOutcome.DENY
+    assert denied.rule_id == "resource_limit_exceeded"
+
+
+def test_configured_validator_requires_an_exact_argv_match(engine: GovernanceEngine) -> None:
+    """Catch an LLM adding arguments to a pre-authorized validator command."""
+    exact = engine.evaluate(action(ToolName.RUN_VALIDATOR, argv=["pytest", "-q"]))
+    changed = engine.evaluate(action(ToolName.RUN_VALIDATOR, argv=["pytest", "-q", "--pdb"]))
+
+    assert exact.outcome is GovernanceOutcome.ALLOW
+    assert exact.rule_id == "configured_validator"
+    assert changed.outcome is GovernanceOutcome.DENY
+    assert changed.rule_id == "validator_not_configured"
+
+
+@pytest.mark.parametrize(
+    ("argv", "rule_id"),
+    [
+        (["sudo", "id"], "hard_denied_command"),
+        (["cat", ".env"], "sensitive_path"),
+        (["pytest", "../outside"], "workspace_boundary"),
+    ],
+)
+def test_configured_validator_cannot_override_compiled_boundaries(
+    argv: list[str], rule_id: str, engine: GovernanceEngine
+) -> None:
+    """Catch repository validators bypassing hard, sensitive, or workspace denials."""
+    governance = GovernanceEngine(
+        workspace=engine.workspace,
+        settings=Settings(validation_commands=[argv]),
+        database=engine.database,
+        task_id="t1",
+    )
+
+    decision = governance.evaluate(action(ToolName.RUN_VALIDATOR, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == rule_id
+
+
+def test_validator_allowlist_is_an_immutable_startup_snapshot(engine: GovernanceEngine) -> None:
+    """Catch later settings mutation adding a command that was not authorized at startup."""
+    engine.settings.validation_commands.append(["python", "-m", "pytest"])
+
+    decision = engine.evaluate(
+        action(ToolName.RUN_VALIDATOR, argv=["python", "-m", "pytest"])
+    )
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "validator_not_configured"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["rg", "TODO", "src"],
+        ["rg", "bash", "src"],
+        ["git", "status"],
+        ["git", "diff", "--", "src"],
+    ],
+)
+def test_exact_read_commands_are_allowed(argv: list[str], engine: GovernanceEngine) -> None:
+    """Catch the narrow read-only argv allowlist being lost to the approval fallback."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.ALLOW
+    assert decision.rule_id == "approved_read_command"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["rg", "TODO", "../outside"],
+        ["git", "diff", "--", "../outside"],
+    ],
+)
+def test_read_command_path_operands_cannot_escape(argv: list[str], engine: GovernanceEngine) -> None:
+    """Catch the command allowlist bypassing the workspace fence for path operands."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "workspace_boundary"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["rg", "TODO", ";", "shutdown"],
+        ["rg", "--pre=./evil", "TODO", "src"],
+        ["git", "status", ">", "report"],
+        ["bash", "-c", "git status"],
+        ["pytest", "-q"],
+        ["git", "commit", "-m", "message"],
+    ],
+)
+def test_non_allowlisted_commands_require_approval(argv: list[str], engine: GovernanceEngine) -> None:
+    """Catch shell syntax or unclassified commands gaining read-only authorization."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert decision.rule_id == "command_requires_approval"
+
+
+def test_memory_persistence_requires_approval(engine: GovernanceEngine) -> None:
+    """Catch model-authored memory becoming trusted without user confirmation."""
+    decision = engine.evaluate(action(ToolName.SAVE_MEMORY, category="decision", content="Use SQLite"))
+
+    assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert decision.rule_id == "memory_persistence"
+
+
+def test_compiled_policy_rejects_any_repository_selected_version() -> None:
+    """Catch callers constructing a locally weakened or approval-compatible policy version."""
+    with pytest.raises(ValueError, match="compiled policy"):
+        Policy(version="repository-choice")
+
+
+def test_action_digest_has_the_specified_canonical_utf8_bytes() -> None:
+    """Catch digest drift in key order, whitespace, Unicode encoding, or policy binding."""
+    digest = action_digest(
+        task_id="τ",
+        action=action(ToolName.MOVE_FILE, destination="new.py", source="old.py"),
+        workspace=Path("/"),
+        policy_version="1.0",
+    )
+
+    assert digest == "085b9df5890d61928299661e5189e7531e3c7802a412369c790699149884821e"
+
+
+def test_unserializable_numeric_values_fail_policy_evaluation_closed(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch NaN entering a non-canonical digest and creating an ambiguous approval."""
+    unsafe = Action.model_construct(tool=ToolName.SAVE_MEMORY, arguments={"content": float("nan")})
+
+    decision = engine.evaluate(unsafe)
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "policy_evaluation_failed"
+    assert decision.approval_id is None
+
+
+def test_approval_does_not_authorize_changed_arguments(engine: GovernanceEngine) -> None:
+    """Catch an approval digest authorizing a destructive action with different arguments."""
+    original = action(ToolName.DELETE_FILE, path="old.py")
+    approval = engine.create_pending_approval("t1", original)
+    now = datetime.now(UTC)
+    engine.approvals.approve(approval.id, now)
+
+    assert (
+        engine.authorize_persisted(
+            "t1", action(ToolName.DELETE_FILE, path="other.py"), approval.id, now
+        )
+        is False
+    )
+    assert engine.approvals.get(approval.id).status is ApprovalStatus.APPROVED
+
+
+def test_hard_denial_cannot_create_a_pending_approval(engine: GovernanceEngine) -> None:
+    """Catch an approval API that bypasses the policy outcome and persists a hard denial."""
+    with pytest.raises(PolicyDenied, match="eligible"):
+        engine.create_pending_approval(
+            "t1", action(ToolName.RUN_COMMAND, argv=["git", "reset", "--hard"])
+        )
+
+    count = engine.database.connection.execute("SELECT count(*) FROM approvals").fetchone()[0]
+    assert count == 0
+
+
+def test_approved_action_is_single_use(engine: GovernanceEngine) -> None:
+    """Catch a persisted approval replaying the exact same destructive action."""
+    deletion = action(ToolName.DELETE_FILE, path="old.py")
+    approval = engine.create_pending_approval("t1", deletion)
+    now = datetime.now(UTC)
+    engine.approvals.approve(approval.id, now)
+
+    assert engine.authorize_persisted("t1", deletion, approval.id, now) is True
+    assert engine.authorize_persisted("t1", deletion, approval.id, now) is False
+    assert engine.approvals.get(approval.id).status is ApprovalStatus.CONSUMED
+
+
+def test_expired_approval_cannot_resume_and_records_mismatch(engine: GovernanceEngine) -> None:
+    """Catch resume skipping expiry or failing to leave an auditable policy signal."""
+    deletion = action(ToolName.DELETE_FILE, path="old.py")
+    now = datetime.now(UTC)
+    approval = engine.create_pending_approval(
+        "t1", deletion, expires_at=now + timedelta(seconds=1)
+    )
+    engine.approvals.approve(approval.id, now)
+
+    assert (
+        engine.authorize_persisted("t1", deletion, approval.id, now + timedelta(seconds=2))
+        is False
+    )
+    assert [event.event_type for event in engine.audit.list_for_task("t1")] == [
+        "approval_mismatch"
+    ]
+
+
+def test_resume_re_evaluates_policy_and_returns_waiting_task_to_running(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch resume consuming by old digest without re-running current hard policy and feedback."""
+    deletion = action(ToolName.DELETE_FILE, path="old.py")
+    approval = engine.create_pending_approval("t1", deletion)
+    now = datetime.now(UTC)
+    engine.approvals.approve(approval.id, now)
+    engine.database.tasks.transition_status(
+        "t1", TaskStatus.RUNNING, event_type="task_started", payload={}
+    )
+    engine.database.tasks.transition_status(
+        "t1", TaskStatus.WAITING_APPROVAL, event_type="approval_requested", payload={}
+    )
+
+    changed_to_hard_denial = action(ToolName.RUN_COMMAND, argv=["sudo", "id"])
+    assert (
+        engine.authorize_persisted("t1", changed_to_hard_denial, approval.id, now) is False
+    )
+
+    assert engine.database.tasks.get("t1").status is TaskStatus.RUNNING
+    mismatch = engine.audit.list_for_task("t1")[-1]
+    assert mismatch.event_type == "approval_mismatch"
+    assert mismatch.redacted_payload["feedback"] == {
+        "kind": "POLICY_VIOLATION",
+        "message": "persisted approval no longer authorizes the action",
+        "can_continue": True,
+    }
+    assert engine.approvals.get(approval.id).status is ApprovalStatus.APPROVED
+
+
+def test_approval_is_bound_to_task_workspace_and_policy_version(
+    engine: GovernanceEngine, tmp_path: Path
+) -> None:
+    """Catch digest-only authorization that ignores persisted binding columns or context."""
+    deletion = action(ToolName.DELETE_FILE, path="old.py")
+    now = datetime.now(UTC)
+    approval = engine.create_pending_approval("t1", deletion)
+    engine.approvals.approve(approval.id, now)
+
+    assert engine.authorize_persisted("other-task", deletion, approval.id, now) is False
+
+    changed_workspace = tmp_path / "different-workspace"
+    changed_workspace.mkdir()
+    with pytest.raises(ValueError, match="registered workspace"):
+        GovernanceEngine(
+            workspace=changed_workspace,
+            settings=engine.settings,
+            database=engine.database,
+            task_id="t1",
+        )
+
+    engine.database.connection.execute(
+        "UPDATE approvals SET policy_version = '0.9' WHERE id = ?", (approval.id,)
+    )
+    assert engine.authorize_persisted("t1", deletion, approval.id, now) is False
+
+
+@pytest.mark.parametrize("tool", [ToolName.READ_FILE, ToolName.RUN_COMMAND])
+def test_internal_symlink_cannot_alias_a_sensitive_target(
+    tool: ToolName, engine: GovernanceEngine
+) -> None:
+    """Catch sensitivity checks that inspect only an in-workspace symlink's submitted name."""
+    sensitive = engine.workspace / ".env"
+    sensitive.write_text("SECRET=x", encoding="utf-8")
+    (engine.workspace / "alias").symlink_to(sensitive)
+    aliased_action = (
+        action(ToolName.READ_FILE, path="alias")
+        if tool is ToolName.READ_FILE
+        else action(ToolName.RUN_COMMAND, argv=["rg", "SECRET", "alias"])
+    )
+
+    decision = engine.evaluate(aliased_action)
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "sensitive_path"
