@@ -357,6 +357,8 @@ git commit -m "feat: execute governed tools and feedback checks"
 
 ### Task 6: Mock and OpenAI-compatible providers
 
+**Status:** Complete — commit `a70b2a6`; 295 tests passing; review approved.
+
 **Files:**
 - Create: `src/guarded_agent/providers/base.py`, `src/guarded_agent/providers/mock.py`, `src/guarded_agent/providers/openai_compatible.py`
 - Create: `tests/providers/test_mock.py`, `tests/providers/test_openai_compatible.py`
@@ -365,7 +367,7 @@ git commit -m "feat: execute governed tools and feedback checks"
 - Consumes: list of structured context messages and strict action schema
 - Produces: `LLMProvider.next_action(messages) -> Action`
 
-- [ ] **Step 1: Write failing provider tests**
+- [x] **Step 1: Write failing provider tests**
 
 ```python
 def test_mock_provider_can_branch_on_feedback() -> None:
@@ -379,23 +381,23 @@ def test_http_provider_rejects_non_action_json(httpx_mock) -> None:
         provider(httpx_mock).next_action([])
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/providers -q`
 
 Expected: provider modules absent.
 
-- [ ] **Step 3: Implement the narrow provider abstraction**
+- [x] **Step 3: Implement the narrow provider abstraction**
 
 Mock provider records received messages and returns scripted actions. HTTP provider performs one bounded HTTP request, parses one action, has explicit connect/read timeout and bounded retry only before a valid action exists. Never implement a provider-owned loop or tool execution.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `pytest tests/providers -q`
 
 Expected: branching, request shape, timeout, HTTP failure and invalid action tests pass without network.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/providers tests/providers
