@@ -1,7 +1,7 @@
 # SPEC 与 PLAN 协作过程
 
 **日期：** 2026-08-09  
-**当前阶段：** brainstorming 书面 SPEC 已获用户批准；`writing-plans` 已生成 `PLAN.md`，等待执行方式确认和冷启动验证。
+**当前阶段：** 冷启动审计已完成并据已确认 resolution 修订 `SPEC.md` 与 `PLAN.md`；可进入 Task 1 实现。
 
 ## 1. 使用的方法
 
@@ -64,8 +64,39 @@
 
 用户在 2026-08-09 明确回复“批准”。复核版本为 commit `5228011`；该版本保留了无公网 URL 的偏离、客观验收门禁和个人反思学术归属说明，未要求进一步修改。
 
-## 6. 冷启动验证计划
+## 6. 冷启动规格审计（Task 0）
 
-在 `PLAN.md` 完成后，按课程要求使用不同类型且不继承当前对话历史的智能体，仅提供 `SPEC.md` 和 `PLAN.md`，选择 1–2 个任务尝试实现。它遇到不确定处必须暂停而非猜测。暂停问题、误读、产出差异以及由此形成的 SPEC/PLAN 修订前后 diff 将追加到本文。
+### 6.1 隔离边界与真实性说明
 
-当前尚未执行冷启动验证；它是 `PLAN.md` Task 0 的实现前门禁，不得把计划写成已完成证据。
+- 请求的审计分派：无项目历史的 `gpt-5.6-terra`，只提供 `SPEC.md`、`PLAN.md`，并明确要求“遇到不确定之处即暂停询问，而非凭猜测继续；不要写实现代码”。
+- 记录的审计身份：Codex（GPT-5）；审计材料只读上述两份规范，未读取实现、测试、Git 状态、过程文档或既有对话/记忆，且未写实现代码。
+- 限制：审计者不能独立验证该分派确为不同 agent 类型。因此本记录是无历史的 best-effort 审计，**不是**“已满足不同 agent 类型”这一条件的证据。
+- 输入与确认：`.superpowers/sdd/PLAN/cold-start-audit.md` 记录了暂停问题；用户于 2026-08-09 在 `task-0-resolutions.md` 确认以下所有选择为规范性决定。
+
+### 6.2 问题、分歧与已确认修订
+
+| ID | 审计问题及分歧解释 | 归属 | 已确认选择 | 简明前后变化 |
+|---|---|---|---|---|
+| T1-1 | `Action` 是开放参数字典、立即判别联合，还是留给 Task 5？ | SPEC / PLAN | Task 1 提供只含已知 `ToolName` 和 `arguments` 的严格外壳；Task 5 完成逐工具判别参数模型；未知工具始终执行前拒绝。 | 从“工具有参数模型”的散文改为 §3.1 的 14 个工具名、严格外壳及 Task 5 边界。 |
+| T1-2 | `ToolResult`、`Feedback`、`GovernanceDecision`、`TaskStatus`、`Settings` 是自由 DTO 还是稳定 API？ | SPEC / PLAN | 固定所有跨模块字段、枚举和 JSON 序列化边界，禁止自由扩展字段。 | §7 新增 DTO 契约表；Task 1 明列产物与断言。 |
+| T1-3 | `Outcome` 的来源是漏写 enum、嵌套 enum 还是裸字符串？ | PLAN | 使用 `GovernanceOutcome(str, Enum)`，值精确为 `ALLOW`、`REQUIRE_APPROVAL`、`DENY`。 | 从 `Outcome.DENY` 改为 `GovernanceOutcome.DENY`，并规定导入模块。 |
+| T1-4 | 未知 TOML 键忽略、仅拒安全键，还是可放宽资源限制？ | SPEC / PLAN | 未知键均错误；最大值为 20 轮、4 连续失败、1800 总秒、120 命令秒、每流 65536 bytes。 | §4.6 增加唯一 TOML schema、范围及 `[governance]` 禁止规则。 |
+| T1-5 | 配置加载谁规范化工作区、缺配置是否错误、符号链接根是否允许？ | SPEC / PLAN | `load_settings` strict-resolve 到绝对目录；符号链接根允许但 realpath 是身份；缺配置使用默认；无效配置以 `invalid configuration:` 报错。 | §4.6 与 Task 1 写出顺序、返回值和错误契约。 |
+| T4-1 | 是否允许 `sub/../file`、绝对路径和内部符号链接？ | SPEC / PLAN | 文件路径仅相对 POSIX；拒空、绝对、NUL、`.`、`..`；内部链接仅最终 realpath 留在工作区时允许。 | §3.3 从泛称围栏改为纯路径检查及现有/新建目标解析算法。 |
+| T4-2 | 敏感名称只含 `.env` 还是需保护 Git、私钥、凭据；读写删是否一致？ | SPEC / PLAN | `.git`、`.env`、`.env.*`、列明的私钥及 `.guarded-agent/credentials*` 均对普通文件工具硬拒绝。 | §3.3 新增大小写和操作一致的敏感路径表；Git 仅经只读工具。 |
+| T4-3 | “安全测试命令”是语义判断、白名单还是项目脚本也可允许？ | SPEC / PLAN | LLM 请求的 `rg`、`git status`、`git diff` 允许；安装、commit、项目脚本和未匹配命令需审批；提权、系统破坏和危险 Git 拒绝。 | §3.3 改为有序 argv 规则与稳定 rule_id，不再使用“safe test”猜测。 |
+| T4-4 | 写入、搜索、Git 只读、验证器、记忆和未知工具如何治理？ | SPEC / PLAN | 读/搜索/有界写允许；删除/移动/安装/commit/项目脚本需审批；未知工具拒绝；配置中的精确验证器为系统预授权。 | §3.3 新增 v1 工具×条件×结果矩阵，并规定 validator 不接受 LLM 替换参数。 |
+| T4-5 | 摘要是任意 JSON、RFC 8785 还是 Pydantic 输出？ | SPEC / PLAN | 小写 SHA-256 hex，UTF-8、键排序、无空白、无 NaN/Infinity；绑定任务、工具、规范化参数、realpath 和策略版本。 | §3.3 新增固定 JSON 对象与字节级规则。 |
+| T4-6 | 审批创建即授权还是 PENDING；何时过期，如何原子消费？ | SPEC / PLAN | `PENDING → APPROVED | REJECTED | EXPIRED`，仅批准后可消费；默认 10 分钟；SQLite 条件更新/事务原子消费。 | §4.4、§7 Approval 和 Task 2/4 改为完整状态机与 API。 |
+| T4-7 | 策略来自代码、TOML 或数据库；版本变化如何处理？ | SPEC / PLAN | 版本 `1.0` 编译入程序、仓库不可覆盖；评估失败拒绝；版本变化使审批失效。 | §3.3 明定 `Policy(version="1.0")` 与失败闭合行为。 |
+| T4-8 | 恢复时重问 LLM、执行旧动作还是仅比较 digest？不匹配后怎样？ | SPEC / PLAN | 从持久化规范化动作恢复，完整重新评估并重算摘要；不匹配不执行、写 `approval_mismatch` 审计并反馈下一轮。 | §4.4 与 Task 7 加入精确恢复顺序和测试结果。 |
+
+### 6.3 额外确认的交付约束
+
+- 删除 Task 11 的 README 标题源码匹配测试。README 主题由人工验收并记录；Task 10 仍自动校验 GitLab 精确命名的 `unit-test` job。
+- `.gitignore` 已由工作树设置提交 `308434d` 创建；Task 1 只能修改/扩展它，不得声称创建它。
+- 公网部署仍明确不在范围内；本次审计不虚构 CI、部署、PR 或个人反思证据。
+
+### 6.4 审计结论
+
+审计前，Task 1 与 Task 4 不能仅凭规范无歧义实现。上述已确认修订关闭了列出的暂停点；实现工作仍必须遵守 PLAN 的 RED→GREEN 证据与后续验证门禁。

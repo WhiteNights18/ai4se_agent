@@ -48,31 +48,31 @@ Tasks 2–6 may be implemented in isolated worktrees after Task 1. Tasks 8–10 
 
 **Files:**
 - Modify: `SPEC_PROCESS.md`
-- Modify if defects are found: `SPEC.md`, `PLAN.md`
+- Modify because defects were found: `SPEC.md`, `PLAN.md`
 
 **Interfaces:**
-- Consumes: approved `SPEC.md` and this plan only
+- Consumes: approved `SPEC.md`, `PLAN.md`, cold-start audit and confirmed resolutions
 - Produces: a recorded cold-start audit and corrected unambiguous specifications
 
-- [ ] **Step 1: Start an isolated, different agent type**
+- [x] **Step 1: Request an isolated, different agent type**
 
-Give it only `SPEC.md` and `PLAN.md`, no conversation or memory, and ask it to inspect Tasks 1 and 4. Its exact instruction must include: “遇到不确定之处即暂停询问，而非凭猜测继续；不要写实现代码。” If no genuinely different agent type is available in the environment, record that limitation instead of claiming compliance and perform a no-history best-effort audit.
+Requested a no-history `gpt-5.6-terra` dispatch with only `SPEC.md` and `PLAN.md` and the instruction “遇到不确定之处即暂停询问，而非凭猜测继续；不要写实现代码。” The auditor could not independently verify that it was a different agent type; record this limitation and describe the result only as a no-history best-effort audit.
 
-- [ ] **Step 2: Record every question and divergent interpretation**
+- [x] **Step 2: Record every question and divergent interpretation**
 
 Append the agent type, isolated context, paused questions, expected interpretation, actual interpretation, and whether the defect belongs to SPEC or PLAN to `SPEC_PROCESS.md`.
 
-- [ ] **Step 3: Patch specification defects**
+- [x] **Step 3: Patch specification defects**
 
 For each defect, include a concise before/after excerpt in `SPEC_PROCESS.md`; remove ambiguity in the normative document.
 
-- [ ] **Step 4: Verify documentation consistency**
+- [x] **Step 4: Verify documentation consistency**
 
 Run: `rg -n 'TBD|TODO|待定|implement later|fill in details' SPEC.md PLAN.md SPEC_PROCESS.md`
 
 Expected: no unresolved placeholder in normative sections; historical quoted text must be explicitly labelled.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add SPEC.md PLAN.md SPEC_PROCESS.md
@@ -84,13 +84,14 @@ git commit -m "docs: validate specification with cold-start audit"
 ### Task 1: Project skeleton, configuration, and domain contracts
 
 **Files:**
-- Create: `pyproject.toml`, `Makefile`, `.gitignore`
+- Create: `pyproject.toml`, `Makefile`
+- Modify: `.gitignore` (created before Task 1 by setup commit `308434d`)
 - Create: `src/guarded_agent/__init__.py`, `src/guarded_agent/domain.py`, `src/guarded_agent/config.py`
 - Create: `tests/test_config.py`, `tests/test_domain.py`
 
 **Interfaces:**
 - Consumes: none
-- Produces: `Action`, `ToolResult`, `Feedback`, `GovernanceDecision`, `TaskStatus`, `Settings`, and `load_settings(workspace: Path) -> Settings`
+- Produces: strict `Action` envelope and `ToolName`; `ToolResult`, `Feedback`, `GovernanceOutcome`, `GovernanceDecision`, `TaskStatus`, `Settings`, `ConfigError`; and `load_settings(workspace: Path) -> Settings`. Task 5 completes `Action.arguments` as strict per-tool discriminated models.
 
 - [ ] **Step 1: Write failing contract tests**
 
@@ -101,7 +102,7 @@ def test_action_rejects_unknown_fields() -> None:
 
 def test_repository_config_cannot_disable_hard_boundaries(tmp_path: Path) -> None:
     (tmp_path / "guarded-agent.toml").write_text('[governance]\nallow_workspace_escape=true\n')
-    with pytest.raises(ConfigError, match="hard security"):
+    with pytest.raises(ConfigError, match="invalid configuration:"):
         load_settings(tmp_path)
 ```
 
@@ -113,7 +114,7 @@ Expected: collection/import failure because `guarded_agent.domain` and `guarded_
 
 - [ ] **Step 3: Implement minimal typed contracts and config loader**
 
-Use strict Pydantic models (`extra="forbid"`), string enums for states, TOML parsing through `tomllib`, defaults of 20 turns/4 failures/30 minutes/120-second command timeout, and explicit rejection of unknown security-relaxing keys.
+Use strict Pydantic models (`extra="forbid"`) and the full SPEC §7.1 DTO field contracts; define `GovernanceOutcome` at `guarded_agent.domain.GovernanceOutcome`. Parse only the SPEC §4.6 TOML schema through `tomllib`: unknown keys and every `[governance]` key fail with `ConfigError("invalid configuration: ...")`; validate all hard maxima. Resolve the workspace with `Path.resolve(strict=True)`, require a directory, and use defaults when the config file is absent.
 
 - [ ] **Step 4: Verify GREEN and static quality**
 
@@ -138,15 +139,16 @@ git commit -m "feat: define harness domain contracts"
 
 **Interfaces:**
 - Consumes: domain models from Task 1
-- Produces: `Database.open(path)`, `TaskStore`, `AuditStore.append()`, `MemoryStore.add()` and `MemoryStore.search(workspace_id, query, limit=10)`
+- Produces: `Database.open(path)`, `TaskStore`, `AuditStore.append()`, `MemoryStore.add()` / `search(workspace_id, query, limit=10)`, and an approval repository with `create_pending(...)`, `approve(id, now)`, `reject(id, now)`, and `consume_if_authorized(id, expected_digest, now) -> bool`
 
 - [ ] **Step 1: Write failing persistence tests**
 
 ```python
 def test_approval_can_be_consumed_only_once(db: Database) -> None:
-    approval = db.approvals.create(task_id="t1", action_digest="abc", policy_version="1")
-    assert db.approvals.consume(approval.id, "abc", "1") is True
-    assert db.approvals.consume(approval.id, "abc", "1") is False
+    approval = db.approvals.create_pending(task_id="t1", action_digest="abc", policy_version="1.0", summary="delete old.py")
+    db.approvals.approve(approval.id, now)
+    assert db.approvals.consume_if_authorized(approval.id, "abc", now) is True
+    assert db.approvals.consume_if_authorized(approval.id, "abc", now) is False
 
 def test_memory_search_is_workspace_scoped(memory: MemoryStore) -> None:
     memory.add("w1", "convention", "Use Ruff", "user", "confirmed")
@@ -162,7 +164,7 @@ Expected: missing store imports.
 
 - [ ] **Step 3: Implement schema and repositories**
 
-Enable SQLite foreign keys, create normalized tables from SPEC §7, wrap status plus audit writes in transactions, enforce unique turn number and one-time approval consumption, and use deterministic token matching plus recency for memory search. Do not store model guesses as confirmed memory.
+Enable SQLite foreign keys, create normalized tables from SPEC §7, wrap status plus audit writes in transactions, enforce unique turn number and the specified approval state machine. Implement `consume_if_authorized` as one conditional update or one transaction that checks approval, expiry, digest and prior consumption. Use deterministic token matching plus recency for memory search. Do not store model guesses as confirmed memory.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -236,7 +238,7 @@ git commit -m "feat: add encrypted credential vault"
 
 **Interfaces:**
 - Consumes: `Action`, `Settings`, canonical workspace, approval repository
-- Produces: `GovernanceEngine.evaluate(action, context) -> GovernanceDecision`, `canonicalize_inside(workspace, candidate) -> Path`, and `action_digest(...) -> str`
+- Produces: `GovernanceEngine.evaluate(action, context) -> GovernanceDecision`, `canonicalize_inside(workspace, candidate) -> Path`, `action_digest(...) -> str`, `create_pending_approval(...)`, and resume authorization through the Task 2 atomic repository API
 
 - [ ] **Step 1: Write failing path and command policy tests**
 
@@ -251,7 +253,7 @@ def test_symlink_escape_is_denied(tmp_path: Path) -> None:
 @pytest.mark.parametrize("command", [["sudo", "id"], ["git", "reset", "--hard"], ["shutdown", "-h", "now"]])
 def test_hard_denials_have_no_approval(command: list[str], engine: GovernanceEngine) -> None:
     decision = engine.evaluate(run_command(command))
-    assert decision.outcome is Outcome.DENY
+    assert decision.outcome is GovernanceOutcome.DENY
 ```
 
 - [ ] **Step 2: Run targeted tests and verify RED**
@@ -262,26 +264,27 @@ Expected: missing governance implementation.
 
 - [ ] **Step 3: Implement policy pipeline**
 
-Resolve existing targets with `Path.resolve(strict=True)` and prospective writes by resolving the nearest existing parent; reject `..`, symlink escape and sensitive names. Classify safe read/test commands as allow, mutations as approval, and hard-denied programs/argument patterns as deny. Hash canonical JSON containing task, tool, normalized arguments, workspace and policy version.
+Implement the exact SPEC §3.3 path, sensitive-name, tool matrix, command argv ordering and `Policy(version="1.0")`; do not use semantic guesses such as “safe test command”. `canonicalize_inside` accepts only validated relative POSIX paths, resolves existing targets or the nearest existing parent, and permits internal symlinks only when their final realpath remains inside. Hash exactly the specified canonical JSON using SHA-256/UTF-8. Import `GovernanceOutcome` from `guarded_agent.domain`.
 
 - [ ] **Step 4: Add failing approval tampering test**
 
 ```python
 def test_approval_does_not_authorize_changed_arguments(engine: GovernanceEngine) -> None:
     original = delete_action("old.py")
-    approval = engine.create_approval("t1", original)
-    assert engine.authorize("t1", delete_action("other.py"), approval.id) is False
+    approval = engine.create_pending_approval("t1", original)
+    engine.approvals.approve(approval.id, now)
+    assert engine.authorize_persisted("t1", delete_action("other.py"), approval.id, now) is False
 ```
 
 Run: `pytest tests/test_governance.py::test_approval_does_not_authorize_changed_arguments -q`
 
 Expected: FAIL until approval verification exists.
 
-- [ ] **Step 5: Implement single-use, expiring approval verification and verify GREEN**
+- [ ] **Step 5: Implement pending/approved/single-use expiry verification and verify GREEN**
 
 Run: `pytest tests/test_paths.py tests/test_governance.py -q`
 
-Expected: traversal, symlink, sensitivity, risk tiers, expiry, tampering and replay tests all pass.
+Expected: traversal, internal/external symlink, sensitive paths, exact command tiers, configured-validator bypass prevention, expiry, tampering, resume mismatch audit/feedback and replay tests all pass.
 
 - [ ] **Step 6: Commit**
 
@@ -299,7 +302,7 @@ git commit -m "feat: enforce workspace and approval governance"
 - Create: `tests/test_tools.py`, `tests/test_feedback.py`
 
 **Interfaces:**
-- Consumes: approved `Action`, canonical workspace, `Settings`, `Redactor`
+- Consumes: Task 5 strict per-tool `Action`, canonical workspace, `Settings`, `Redactor`
 - Produces: `ToolRegistry.execute(action) -> ToolResult`, `CommandRunner.run(argv, cwd, timeout)`, and `FeedbackEngine.verify(commands) -> Feedback`
 
 - [ ] **Step 1: Write failing real-behavior tests**
@@ -323,7 +326,7 @@ Expected: missing runner/registry/feedback imports.
 
 - [ ] **Step 3: Implement tools and validation**
 
-Implement bounded file reads/searches, atomic writes, governed delete/move, Git status/diff, and command execution with `subprocess.Popen` argument arrays, process-group timeout termination, environment allowlist, 64 KiB stream limits and redaction. Classify zero/non-zero/timeout/start failure distinctly.
+Complete the strict discriminated argument models promised by SPEC §3.1 before dispatch. Implement bounded file reads/searches, atomic writes, governed delete/move, Git status/diff, and command execution with `subprocess.Popen` argument arrays, process-group timeout termination, environment allowlist, 64 KiB stream limits and redaction. `run_validator` can execute only an exact startup-loaded `Settings.validation_commands` argv, never an LLM substitute. Classify zero/non-zero/timeout/start failure distinctly.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -418,7 +421,7 @@ Expected: missing `AgentLoop`/service.
 
 - [ ] **Step 3: Implement one-step state machine and context bounds**
 
-Load goal, at most 8 recent turn summaries and 10 related memories; validate action; evaluate governance; pause, deny or execute; verify after mutation; persist turn plus audit; enforce max turns/failures/time. A completion action always invokes final acceptance commands.
+Load goal, at most 8 recent turn summaries and 10 related memories; validate action; evaluate governance; pause, deny or execute; verify after mutation; persist turn plus audit; enforce configured limits within the hard maxima. A completion action always invokes selected startup-loaded acceptance commands.
 
 - [ ] **Step 4: Add failing pause/resume and false-completion tests**
 
@@ -433,11 +436,11 @@ def test_completion_is_rejected_when_acceptance_fails(harness) -> None:
     assert harness.step(task.id) is not TaskStatus.COMPLETED
 ```
 
-- [ ] **Step 5: Implement approval resume, cancel, and stop conditions; verify GREEN**
+- [ ] **Step 5: Implement persisted-action approval resume, cancel, and stop conditions; verify GREEN**
 
 Run: `pytest tests/test_agent_loop.py tests/test_service.py -q`
 
-Expected: feedback correction, pause/resume, denial, replay, completion gate, cancellation and all limits pass.
+Expected: feedback correction, pause/resume from persisted normalized action, denial, expiry/replay, mismatch audit plus next-turn feedback, completion gate, cancellation and all limits pass.
 
 - [ ] **Step 6: Commit**
 
@@ -529,7 +532,7 @@ Expected: web app missing.
 
 - [ ] **Step 3: Implement server-rendered pages and polling**
 
-Expose task list/create/detail/cancel, approval approve/reject, memory list/add/delete, settings/status, and `/api/tasks/{id}/status`. Validate CSRF token for state changes, escape output, fix workspace at startup, and redact all displayed payloads. The CLI must reject any host other than `127.0.0.1`.
+Expose task list/create/detail/cancel, approval approve/reject, memory list/add/delete, settings/status, and `/api/tasks/{id}/status`. At startup load project validation commands and render them as the only selectable acceptance choices; reject arbitrary acceptance text. Validate CSRF token for state changes, escape output, fix workspace at startup, and redact all displayed payloads. The CLI must reject any host other than `127.0.0.1`.
 
 - [ ] **Step 4: Verify GREEN and accessibility basics**
 
@@ -595,55 +598,40 @@ git commit -m "build: package linux binary in gitlab ci"
 
 **Files:**
 - Create: `README.md`, `AGENT_LOG.md`, `REFLECTION.md`, `THIRD_PARTY_LICENSES.md`
-- Create: `tests/test_docs.py`
 - Modify: `PLAN.md`, `SPEC_PROCESS.md`
 
 **Interfaces:**
 - Consumes: verified commands, actual commits, agent review reports and known limitations
 - Produces: complete handoff documentation and truthful process evidence
 
-- [ ] **Step 1: Write documentation contract test**
-
-```python
-@pytest.mark.parametrize("heading", [
-    "项目简介", "安装", "运行", "分发", "目录结构", "安全边界", "凭据管理", "已知限制"
-])
-def test_readme_required_sections(heading: str) -> None:
-    assert f"## {heading}" in Path("README.md").read_text()
-```
-
-- [ ] **Step 2: Run it and verify RED**
-
-Run: `pytest tests/test_docs.py -q`
-
-Expected: README absent or required sections absent.
-
-- [ ] **Step 3: Write factual project documentation**
+- [ ] **Step 1: Write factual project documentation**
 
 README must include binary acquisition/build, executable permission, localhost WebUI, CLI examples, encrypted credential setup/status/update/clear, unsupported platform/signing, trusted-repository warning, no public URL, architecture, test command and third-party licenses. `REFLECTION.md` contains headings, word-count guidance, factual commit/test references and explicit markers for the student to write personal analysis; do not generate the personal reflection.
 
-- [ ] **Step 4: Complete process evidence**
+Manual documentation acceptance: a reviewer reads README for the listed topics, confirms examples match the implemented CLI, and records the result in `AGENT_LOG.md`. This is deliberately manual; no README-heading source-text test is created.
+
+- [ ] **Step 2: Complete process evidence**
 
 Append chronological skill usage, prompts, red/green evidence, subagent output, commit hashes, human decisions and deviations to `AGENT_LOG.md`; update PLAN checkboxes with actual commit hashes; finish cold-start outcomes in `SPEC_PROCESS.md`. Never fabricate PR, CI, public registry or deployment evidence.
 
-- [ ] **Step 5: Request two-stage code review and fix findings**
+- [ ] **Step 3: Request two-stage code review and fix findings**
 
 Use `superpowers:requesting-code-review`: first check SPEC compliance, then code quality/security. Resolve every Critical issue and record the review and fixes in `AGENT_LOG.md`.
 
-- [ ] **Step 6: Run fresh final verification**
+- [ ] **Step 4: Run fresh final verification**
 
 Run: `make test && make quality && make binary && ./dist/guarded-agent version && ./dist/guarded-agent demo && git diff --check`
 
 Expected: all commands exit 0, all tests pass, all three demo scenarios pass, and no whitespace errors are reported.
 
-- [ ] **Step 7: Verify requirements line by line**
+- [ ] **Step 5: Verify requirements line by line**
 
 Compare every SPEC §10 acceptance criterion and course deliverable against repository evidence. Report external-owner actions separately: GitLab remote/public visibility, PR workflow, final hosted CI pass, downloadable artifact retention, and the student's 1500–2500 Chinese-character reflection.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add README.md AGENT_LOG.md REFLECTION.md THIRD_PARTY_LICENSES.md PLAN.md SPEC_PROCESS.md tests/test_docs.py
+git add README.md AGENT_LOG.md REFLECTION.md THIRD_PARTY_LICENSES.md PLAN.md SPEC_PROCESS.md
 git commit -m "docs: complete guarded agent delivery evidence"
 ```
 
