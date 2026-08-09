@@ -145,6 +145,8 @@ class AgentLoop:
         task = self.database.tasks.get(self.task_id)
         if task.status is not TaskStatus.WAITING_APPROVAL:
             return task.status
+        if self._timed_out(task) or len(self.database.tasks.list_turns(task.id)) >= self.settings.max_turns:
+            return task.status
         try:
             pending = self.database.tasks.get_pending_action(approval_id)
             if pending.task_id != task.id:
