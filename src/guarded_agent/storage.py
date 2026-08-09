@@ -66,6 +66,24 @@ class Task:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentTurn:
+    id: str
+    task_id: str
+    turn_no: int
+    action_json: dict[str, JsonValue]
+    feedback_json: dict[str, JsonValue]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PendingAction:
+    approval_id: str
+    task_id: str
+    action_json: dict[str, JsonValue]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class Approval:
     id: str
     task_id: str
@@ -240,6 +258,12 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             parsed_values TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pending_actions (
+            approval_id TEXT PRIMARY KEY REFERENCES approvals(id),
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            action_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         """
     )
 
@@ -260,6 +284,13 @@ class TaskStore:
         except sqlite3.IntegrityError as error:
             raise ValueError("workspace already exists") from error
         return workspace
+
+    def get_workspace(self, canonical_path: str) -> Workspace | None:
+        with self._database.operation() as connection:
+            row = connection.execute(
+                "SELECT * FROM workspaces WHERE canonical_path = ?", (canonical_path,)
+            ).fetchone()
+        return _workspace_from_row(row) if row is not None else None
 
     def create_task(
         self,
@@ -395,6 +426,48 @@ class TaskStore:
         except sqlite3.IntegrityError as error:
             raise ValueError("turn does not exist") from error
         return execution_id
+
+    def list_turns(self, task_id: str, *, limit: int | None = None) -> list[AgentTurn]:
+        query = "SELECT * FROM agent_turns WHERE task_id = ? ORDER BY turn_no DESC"
+        parameters: tuple[object, ...] = (task_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters = (task_id, limit)
+        with self._database.operation() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return list(reversed([_turn_from_row(row) for row in rows]))
+
+    def save_pending_action(
+        self, *, approval_id: str, task_id: str, action_json: dict[str, JsonValue]
+    ) -> PendingAction:
+        pending = PendingAction(approval_id, task_id, action_json, _now())
+        try:
+            with self._database.operation() as connection:
+                connection.execute(
+                    "INSERT INTO pending_actions VALUES (?, ?, ?, ?)",
+                    (
+                        pending.approval_id,
+                        pending.task_id,
+                        _json(pending.action_json),
+                        _timestamp(pending.created_at),
+                    ),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError("approval or task does not exist, or pending action already exists") from error
+        return pending
+
+    def get_pending_action(self, approval_id: str) -> PendingAction:
+        with self._database.operation() as connection:
+            row = connection.execute(
+                "SELECT * FROM pending_actions WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"pending action not found: {approval_id}")
+        return _pending_action_from_row(row)
+
+    def delete_pending_action(self, approval_id: str) -> None:
+        with self._database.operation() as connection:
+            connection.execute("DELETE FROM pending_actions WHERE approval_id = ?", (approval_id,))
 
 
 class AuditStore:
@@ -579,6 +652,44 @@ def _task_from_row(row: sqlite3.Row) -> Task:
         _json_object(cast(str, row["limits"])),
         created_at,
         updated_at,
+    )
+
+
+def _workspace_from_row(row: sqlite3.Row) -> Workspace:
+    created_at = _parse_timestamp(cast(str, row["created_at"]))
+    if created_at is None:
+        raise ValueError("workspace timestamp is malformed")
+    return Workspace(
+        cast(str, row["id"]),
+        cast(str, row["canonical_path"]),
+        cast(str, row["name"]),
+        created_at,
+    )
+
+
+def _turn_from_row(row: sqlite3.Row) -> AgentTurn:
+    created_at = _parse_timestamp(cast(str, row["created_at"]))
+    if created_at is None:
+        raise ValueError("turn timestamp is malformed")
+    return AgentTurn(
+        cast(str, row["id"]),
+        cast(str, row["task_id"]),
+        cast(int, row["turn_no"]),
+        _json_object(cast(str, row["action_json"])),
+        _json_object(cast(str, row["feedback_json"])),
+        created_at,
+    )
+
+
+def _pending_action_from_row(row: sqlite3.Row) -> PendingAction:
+    created_at = _parse_timestamp(cast(str, row["created_at"]))
+    if created_at is None:
+        raise ValueError("pending action timestamp is malformed")
+    return PendingAction(
+        cast(str, row["approval_id"]),
+        cast(str, row["task_id"]),
+        _json_object(cast(str, row["action_json"])),
+        created_at,
     )
 
 
