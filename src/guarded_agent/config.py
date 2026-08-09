@@ -41,7 +41,7 @@ def load_settings(workspace: Path) -> Settings:
     try:
         with config_path.open("rb") as config_file:
             parsed = tomllib.load(config_file)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise _invalid(str(error)) from error
 
     _validate_schema(parsed)

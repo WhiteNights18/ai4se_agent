@@ -84,3 +84,11 @@ def test_workspace_must_resolve_to_an_existing_directory(tmp_path: Path) -> None
     file_workspace.write_text("not a directory", encoding="utf-8")
     with pytest.raises(ConfigError, match="^invalid configuration:"):
         load_settings(file_workspace)
+
+
+def test_non_utf8_repository_config_raises_a_prefixed_config_error(tmp_path: Path) -> None:
+    """Catch malformed config bytes that leak a decoder exception past the loader boundary."""
+    (tmp_path / "guarded-agent.toml").write_bytes(b"[limits]\nmax_turns = \xff\n")
+
+    with pytest.raises(ConfigError, match="^invalid configuration:"):
+        load_settings(tmp_path)
