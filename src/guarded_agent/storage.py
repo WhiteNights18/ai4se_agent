@@ -340,6 +340,14 @@ class TaskStore:
             raise KeyError(f"task not found: {task_id}")
         return _task_from_row(row)
 
+    def list_for_workspace(self, workspace_id: str) -> list[Task]:
+        """Return a workspace's tasks newest first for a local control surface."""
+        with self._database.operation() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,)
+            ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
     def transition_status(
         self,
         task_id: str,

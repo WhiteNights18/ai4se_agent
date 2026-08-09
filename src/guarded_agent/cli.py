@@ -115,13 +115,20 @@ def run(
 @app.command()
 def web(
     workspace: Annotated[Path, typer.Option(exists=True, file_okay=False, resolve_path=True)],
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
 ) -> None:
-    """Validate a workspace for the local Web UI integration."""
+    """Start the local-only Web UI for one fixed workspace."""
     try:
-        load_settings(workspace)
+        if host != "127.0.0.1":
+            raise ValueError("WebUI may only bind to 127.0.0.1")
+        import uvicorn
+
+        from guarded_agent.web import create_web_app
+
+        uvicorn.run(create_web_app(workspace, host=host), host=host, port=port)
     except (ConfigError, OSError, ValueError) as error:
         _fail(str(error))
-    _fail("the local Web UI is not included in this build")
 
 
 @app.command()

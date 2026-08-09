@@ -126,6 +126,41 @@ class MemoryStore:
         matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         return [item[3] for item in matches[:limit]]
 
+    def list_for_workspace(self, workspace_id: str) -> list[MemoryEntry]:
+        """List workspace memory without permitting cross-workspace inspection."""
+        with self._database.operation() as connection:
+            rows = connection.execute(
+                """SELECT id, workspace_id, category, content, source, trust, keywords, created_at
+                   FROM memory_entries WHERE workspace_id = ? ORDER BY created_at DESC""",
+                (workspace_id,),
+            ).fetchall()
+        return [_entry_from_row(row) for row in rows]
+
+    def delete(self, workspace_id: str, entry_id: str) -> bool:
+        """Delete only a memory entry that belongs to the configured workspace."""
+        with self._database.operation() as connection:
+            return (
+                connection.execute(
+                    "DELETE FROM memory_entries WHERE id = ? AND workspace_id = ?",
+                    (entry_id, workspace_id),
+                ).rowcount
+                == 1
+            )
+
+
+def _entry_from_row(row: object) -> MemoryEntry:
+    values = cast(dict[str, object], row)
+    return MemoryEntry(
+        cast(str, values["id"]),
+        cast(str, values["workspace_id"]),
+        cast(str, values["category"]),
+        cast(str, values["content"]),
+        MemorySource(cast(str, values["source"])),
+        MemoryTrust(cast(str, values["trust"])),
+        cast(str, values["keywords"]).split(),
+        datetime.fromisoformat(cast(str, values["created_at"])),
+    )
+
 
 def _parse_source(source: MemorySource | str) -> MemorySource:
     try:

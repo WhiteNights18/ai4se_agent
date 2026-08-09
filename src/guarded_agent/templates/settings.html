@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block content %}<h2>Settings</h2><p>Workspace: {{ workspace }}</p><p>Credential status: {% if credential.configured %}configured (locked){% else %}not configured{% endif %}</p><p>Credentials and hard safety rules can only be changed through the CLI.</p>{% endblock %}
