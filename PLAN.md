@@ -46,6 +46,8 @@ Tasks 2–6 may be implemented in isolated worktrees after Task 1. Tasks 8–10 
 
 ### Task 0: Cold-start specification audit
 
+**Status:** Complete — commits `585d0bb`, `7e49e98`; task review clean.
+
 **Files:**
 - Modify: `SPEC_PROCESS.md`
 - Modify because defects were found: `SPEC.md`, `PLAN.md`
