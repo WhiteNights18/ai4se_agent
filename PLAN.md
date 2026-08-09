@@ -307,6 +307,8 @@ git commit -m "feat: enforce workspace and approval governance"
 
 ### Task 5: Tool registry and deterministic feedback
 
+**Status:** Complete — commits `ac0a4e0`, `4cc6140`, `95bc46e`, `2d1f77c`, `e56743d`; 290 tests passing; review approved.
+
 **Files:**
 - Create: `src/guarded_agent/tools.py`, `src/guarded_agent/subprocesses.py`, `src/guarded_agent/feedback.py`
 - Create: `tests/test_tools.py`, `tests/test_feedback.py`
@@ -315,7 +317,7 @@ git commit -m "feat: enforce workspace and approval governance"
 - Consumes: Task 5 strict per-tool `Action`, canonical workspace, `Settings`, `Redactor`
 - Produces: `ToolRegistry.execute(action) -> ToolResult`, `CommandRunner.run(argv, cwd, timeout)`, and `FeedbackEngine.verify(commands) -> Feedback`
 
-- [ ] **Step 1: Write failing real-behavior tests**
+- [x] **Step 1: Write failing real-behavior tests**
 
 ```python
 def test_command_runner_does_not_expand_shell_syntax(runner: CommandRunner, tmp_path: Path) -> None:
@@ -328,23 +330,23 @@ def test_feedback_classifies_test_failure(tmp_path: Path, feedback: FeedbackEngi
     assert result.kind is FeedbackKind.TEST_FAILURE
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/test_tools.py tests/test_feedback.py -q`
 
 Expected: missing runner/registry/feedback imports.
 
-- [ ] **Step 3: Implement tools and validation**
+- [x] **Step 3: Implement tools and validation**
 
 Complete the strict discriminated argument models promised by SPEC §3.1 before dispatch. Implement bounded file reads/searches, atomic writes, governed delete/move, Git status/diff, and command execution with `subprocess.Popen` argument arrays, process-group timeout termination, environment allowlist, 64 KiB stream limits and redaction. `run_validator` can execute only an exact startup-loaded `Settings.validation_commands` argv, never an LLM substitute. Classify zero/non-zero/timeout/start failure distinctly.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `pytest tests/test_tools.py tests/test_feedback.py -q`
 
 Expected: execution, timeout, truncation, redaction, atomic write and classification tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/tools.py src/guarded_agent/subprocesses.py src/guarded_agent/feedback.py tests/test_tools.py tests/test_feedback.py
