@@ -11,24 +11,50 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-_VERSION = 1
-_AAD = b"guarded-agent-credential-vault-v1"
+# Version 1 has no released predecessor, so migration support is intentionally unnecessary.
+_VAULT_VERSION = 1
+_MAX_VAULT_BYTES = 64 * 1024
 _SALT_BYTES = 16
 _NONCE_BYTES = 12
 _KEY_BYTES = 32
-_SCRYPT_N = 2**14
+_MIN_CIPHERTEXT_BYTES = 16
+_MAX_CIPHERTEXT_BYTES = _MAX_VAULT_BYTES
+_MAX_PROVIDER_LENGTH = 128
+_MAX_ENDPOINT_LENGTH = 2048
+_DEFAULT_ENDPOINT = "https://api.openai.com/v1"
+_KDF_PARAMETERS: dict[str, str | int] = {
+    "name": "scrypt",
+    "n": 2**15,
+    "r": 8,
+    "p": 1,
+    "length": _KEY_BYTES,
+}
+_AAD = json.dumps(
+    {"version": _VAULT_VERSION, "kdf": _KDF_PARAMETERS},
+    ensure_ascii=True,
+    separators=(",", ":"),
+    sort_keys=True,
+).encode("ascii")
 
 
-class CredentialUnlockError(ValueError):
+class CredentialError(ValueError):
+    """Raised when a credential cannot be safely stored."""
+
+    def __init__(self) -> None:
+        super().__init__("unable to store credentials")
+
+
+class CredentialUnlockError(CredentialError):
     """Raised when the vault cannot be authenticated and decrypted."""
 
     def __init__(self) -> None:
-        super().__init__("unable to unlock credentials")
+        ValueError.__init__(self, "unable to unlock credentials")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +62,7 @@ class Credential:
     """A decrypted provider credential whose key is deliberately not repr-visible."""
 
     provider: str
+    endpoint: str
     api_key: str = field(repr=False)
 
 
@@ -44,7 +71,15 @@ class CredentialStatus:
     """Non-secret vault state suitable for a CLI, UI, or audit event."""
 
     provider: str | None
+    endpoint: str | None
     configured: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _Envelope:
+    salt: bytes
+    nonce: bytes
+    ciphertext: bytes
 
 
 class CredentialVault:
@@ -53,59 +88,78 @@ class CredentialVault:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def set(self, provider: str, api_key: str, master_password: str) -> None:
+    def set(
+        self,
+        provider: str,
+        api_key: str,
+        master_password: str,
+        *,
+        endpoint: str = _DEFAULT_ENDPOINT,
+    ) -> None:
         """Encrypt and atomically replace the stored credential."""
-        _require_nonempty(provider, "provider")
-        _require_nonempty(api_key, "api key")
-        _require_nonempty(master_password, "master password")
-        salt = os.urandom(_SALT_BYTES)
-        nonce = os.urandom(_NONCE_BYTES)
-        plaintext = json.dumps(
-            {"provider": provider, "api_key": api_key},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        ciphertext = AESGCM(_derive_key(master_password, salt)).encrypt(nonce, plaintext, _AAD)
-        envelope = {
-            "version": _VERSION,
-            "provider": provider,
-            "salt": _encode(salt),
-            "nonce": _encode(nonce),
-            "ciphertext": _encode(ciphertext),
-        }
-        self._atomic_write(json.dumps(envelope, separators=(",", ":")).encode("utf-8"))
+        failure: CredentialError | None = None
+        try:
+            _validate_provider(provider)
+            _validate_endpoint(endpoint)
+            _require_nonempty(api_key, "api key")
+            _require_nonempty(master_password, "master password")
+            salt = os.urandom(_SALT_BYTES)
+            nonce = os.urandom(_NONCE_BYTES)
+            plaintext = json.dumps(
+                {"provider": provider, "endpoint": endpoint, "api_key": api_key},
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            ciphertext = AESGCM(_derive_key(master_password, salt)).encrypt(nonce, plaintext, _AAD)
+            envelope = {
+                "version": _VAULT_VERSION,
+                "kdf": _KDF_PARAMETERS,
+                "salt": _encode(salt),
+                "nonce": _encode(nonce),
+                "ciphertext": _encode(ciphertext),
+            }
+            content = json.dumps(envelope, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        except UnicodeError:
+            failure = CredentialError()
+        if failure is not None:
+            raise failure
+        self._atomic_write(content)
 
     def get(self, master_password: str) -> Credential:
         """Return decrypted credentials or a deliberately non-specific unlock error."""
+        failure: CredentialUnlockError | None = None
         try:
             _require_nonempty(master_password, "master password")
             envelope = _load_envelope(self._path)
-            plaintext = AESGCM(_derive_key(master_password, _decode(envelope["salt"]))).decrypt(
-                _decode(envelope["nonce"]), _decode(envelope["ciphertext"]), _AAD
+            plaintext = AESGCM(_derive_key(master_password, envelope.salt)).decrypt(
+                envelope.nonce, envelope.ciphertext, _AAD
             )
             payload = _load_payload(plaintext)
-            if payload["provider"] != envelope["provider"]:
-                raise ValueError("provider mismatch")
-            return Credential(payload["provider"], payload["api_key"])
-        except (InvalidTag, OSError, UnicodeError, ValueError, TypeError, KeyError, binascii.Error):
-            raise CredentialUnlockError() from None
+            return Credential(payload["provider"], payload["endpoint"], payload["api_key"])
+        except (InvalidTag, OSError, UnicodeError, ValueError, TypeError, binascii.Error):
+            failure = CredentialUnlockError()
+        if failure is not None:
+            raise failure
+        raise AssertionError("credential vault did not return a result")
 
-    def status(self) -> CredentialStatus:
-        """Return provider metadata without decrypting or exposing the API key."""
+    def status(self, master_password: str | None = None) -> CredentialStatus:
+        """Return only authenticated metadata; a locked vault exposes configuration existence."""
         if not self._path.is_file():
-            return CredentialStatus(provider=None, configured=False)
-        try:
-            envelope = _load_envelope(self._path)
-        except (OSError, UnicodeError, ValueError, TypeError, KeyError, binascii.Error):
-            return CredentialStatus(provider=None, configured=True)
-        return CredentialStatus(provider=envelope["provider"], configured=True)
+            return CredentialStatus(provider=None, endpoint=None, configured=False)
+        if master_password is None:
+            return CredentialStatus(provider=None, endpoint=None, configured=True)
+        credential = self.get(master_password)
+        return CredentialStatus(
+            provider=credential.provider, endpoint=credential.endpoint, configured=True
+        )
 
     def clear(self) -> None:
         """Remove the encrypted credential, if configured."""
         try:
             self._path.unlink()
         except FileNotFoundError:
-            pass
+            return
+        _sync_directory(self._path.parent)
 
     def _atomic_write(self, content: bytes) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,64 +167,151 @@ class CredentialVault:
             dir=self._path.parent, prefix=f".{self._path.name}.", suffix=".tmp"
         )
         temporary_path = Path(temporary_name)
+        open_descriptor: int | None = file_descriptor
         try:
             os.fchmod(file_descriptor, stat.S_IRUSR | stat.S_IWUSR)
-            with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file = os.fdopen(file_descriptor, "wb")
+            open_descriptor = None
+            with temporary_file:
                 temporary_file.write(content)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
             os.replace(temporary_path, self._path)
             _sync_directory(self._path.parent)
         except BaseException:
+            if open_descriptor is not None:
+                try:
+                    os.close(open_descriptor)
+                except OSError:
+                    pass
             temporary_path.unlink(missing_ok=True)
             raise
 
 
 def _derive_key(master_password: str, salt: bytes) -> bytes:
-    return Scrypt(salt=salt, length=_KEY_BYTES, n=_SCRYPT_N, r=8, p=1).derive(
-        master_password.encode("utf-8")
+    return Scrypt(
+        salt=salt,
+        length=_KEY_BYTES,
+        n=int(_KDF_PARAMETERS["n"]),
+        r=int(_KDF_PARAMETERS["r"]),
+        p=int(_KDF_PARAMETERS["p"]),
+    ).derive(master_password.encode("utf-8"))
+
+
+def _load_envelope(path: Path) -> _Envelope:
+    raw = path.read_bytes()
+    if len(raw) > _MAX_VAULT_BYTES:
+        raise ValueError("vault exceeds maximum size")
+    parsed: Any = json.loads(raw, object_pairs_hook=_reject_duplicate_fields)
+    if type(parsed) is not dict or set(parsed) != {"version", "kdf", "salt", "nonce", "ciphertext"}:
+        raise ValueError("invalid envelope")
+    if type(parsed["version"]) is not int or parsed["version"] != _VAULT_VERSION:
+        raise ValueError("unsupported envelope version")
+    _validate_kdf(parsed["kdf"])
+    return _Envelope(
+        salt=_decode(parsed["salt"], exact_length=_SALT_BYTES),
+        nonce=_decode(parsed["nonce"], exact_length=_NONCE_BYTES),
+        ciphertext=_decode(
+            parsed["ciphertext"],
+            minimum_length=_MIN_CIPHERTEXT_BYTES,
+            maximum_length=_MAX_CIPHERTEXT_BYTES,
+        ),
     )
 
 
-def _load_envelope(path: Path) -> dict[str, str]:
-    parsed: Any = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(parsed, dict) or set(parsed) != {
-        "version",
-        "provider",
-        "salt",
-        "nonce",
-        "ciphertext",
-    }:
-        raise ValueError("invalid envelope")
-    if parsed["version"] != _VERSION:
-        raise ValueError("unsupported envelope version")
-    for field_name in ("provider", "salt", "nonce", "ciphertext"):
-        if not isinstance(parsed[field_name], str) or not parsed[field_name]:
-            raise ValueError("invalid envelope field")
-    return {field_name: parsed[field_name] for field_name in ("provider", "salt", "nonce", "ciphertext")}
-
-
 def _load_payload(plaintext: bytes) -> dict[str, str]:
-    parsed: Any = json.loads(plaintext.decode("utf-8"))
-    if not isinstance(parsed, dict) or set(parsed) != {"provider", "api_key"}:
+    parsed: Any = json.loads(plaintext.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
+    if type(parsed) is not dict or set(parsed) != {"provider", "endpoint", "api_key"}:
         raise ValueError("invalid credential payload")
-    for field_name in ("provider", "api_key"):
-        if not isinstance(parsed[field_name], str) or not parsed[field_name]:
-            raise ValueError("invalid credential payload")
-    return {"provider": parsed["provider"], "api_key": parsed["api_key"]}
+    provider = parsed["provider"]
+    endpoint = parsed["endpoint"]
+    api_key = parsed["api_key"]
+    _validate_provider(provider)
+    _validate_endpoint(endpoint)
+    _require_nonempty(api_key, "api key")
+    return {"provider": provider, "endpoint": endpoint, "api_key": api_key}
+
+
+def _validate_kdf(value: Any) -> None:
+    if type(value) is not dict or set(value) != set(_KDF_PARAMETERS):
+        raise ValueError("invalid key derivation parameters")
+    if not isinstance(value["name"], str):
+        raise TypeError("invalid key derivation parameters")
+    for parameter in ("n", "r", "p", "length"):
+        if type(value[parameter]) is not int:
+            raise ValueError("invalid key derivation parameters")
+    if value != _KDF_PARAMETERS:
+        raise ValueError("unsupported key derivation parameters")
+
+
+def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate envelope field")
+        result[key] = value
+    return result
 
 
 def _encode(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
 
-def _decode(value: str) -> bytes:
-    return base64.b64decode(value.encode("ascii"), validate=True)
+def _decode(
+    value: Any,
+    *,
+    exact_length: int | None = None,
+    minimum_length: int = 0,
+    maximum_length: int = _MAX_VAULT_BYTES,
+) -> bytes:
+    if not isinstance(value, str) or len(value) > _MAX_VAULT_BYTES:
+        raise ValueError("invalid encoded envelope field")
+    decoded = base64.b64decode(value.encode("ascii"), validate=True)
+    if exact_length is not None and len(decoded) != exact_length:
+        raise ValueError("invalid encoded envelope field")
+    if not minimum_length <= len(decoded) <= maximum_length:
+        raise ValueError("invalid encoded envelope field")
+    return decoded
 
 
-def _require_nonempty(value: str, label: str) -> None:
+def _require_nonempty(value: Any, label: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must not be empty")
+
+
+def _validate_provider(provider: Any) -> None:
+    _require_nonempty(provider, "provider")
+    if len(provider) > _MAX_PROVIDER_LENGTH or _has_control_characters(provider):
+        raise ValueError("invalid provider")
+
+
+def _validate_endpoint(endpoint: Any) -> None:
+    _require_nonempty(endpoint, "endpoint")
+    if (
+        len(endpoint) > _MAX_ENDPOINT_LENGTH
+        or endpoint != endpoint.strip()
+        or _has_control_characters(endpoint)
+    ):
+        raise ValueError("invalid endpoint")
+    try:
+        parts = urlsplit(endpoint)
+        port = parts.port
+    except (UnicodeError, ValueError):
+        raise ValueError("invalid endpoint") from None
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.netloc
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or port is not None and not 1 <= port <= 65535
+    ):
+        raise ValueError("invalid endpoint")
+
+
+def _has_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 def _sync_directory(path: Path) -> None:

@@ -20,6 +20,15 @@ def test_redactor_removes_every_occurrence_and_prefers_longest_secret() -> None:
     assert redacted == "[REDACTED] and [REDACTED] and [REDACTED]"
 
 
+def test_redactor_marker_never_reintroduces_registered_secrets() -> None:
+    secrets = ["[REDACTED]", "REDACTED", "other-token"]
+    redactor = Redactor(secrets)
+
+    redacted = redactor.redact("[REDACTED] REDACTED other-token")
+
+    assert all(secret not in redacted for secret in secrets)
+
+
 def test_redactor_ignores_empty_secrets_without_changing_unrelated_text() -> None:
     redactor = Redactor(["", "sk-secret-value"])
 
