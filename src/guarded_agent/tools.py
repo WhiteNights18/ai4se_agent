@@ -444,27 +444,43 @@ class ToolRegistry:
         normalized_destination = normalize_relative_posix(destination)
         source_target = self._resolved_mutation_target(source, must_exist=True)
         destination_target = self._resolved_mutation_target(destination, must_exist=False)
-        with (
-            self._mutation_parent_fd(source_target) as (source_fd, source_name),
-            self._mutation_parent_fd(destination_target) as (destination_fd, destination_name),
-        ):
-            try:
-                _move_verified(
-                    source_fd,
-                    source_name,
+        rename_completed = False
+        try:
+            with (
+                self._mutation_parent_fd(source_target) as (source_fd, source_name),
+                self._mutation_parent_fd(destination_target) as (
                     destination_fd,
                     destination_name,
-                    expected_source=source_target.expected,
-                    expected_destination=destination_target.expected,
-                )
-            except MutationStateUncertain as error:
+                ),
+            ):
+                try:
+                    _move_verified(
+                        source_fd,
+                        source_name,
+                        destination_fd,
+                        destination_name,
+                        expected_source=source_target.expected,
+                        expected_destination=destination_target.expected,
+                    )
+                except MutationStateUncertain as error:
+                    rename_completed = True
+                    raise MutationStateUncertain(
+                        str(error),
+                        changes=(normalized_source, normalized_destination),
+                    ) from error
+                rename_completed = True
+                os.fsync(source_fd)
+                if destination_fd != source_fd:
+                    os.fsync(destination_fd)
+        except MutationStateUncertain:
+            raise
+        except Exception as error:
+            if rename_completed:
                 raise MutationStateUncertain(
-                    str(error),
+                    "move_file final state could not be verified after rename",
                     changes=(normalized_source, normalized_destination),
                 ) from error
-            os.fsync(source_fd)
-            if destination_fd != source_fd:
-                os.fsync(destination_fd)
+            raise
 
     def _save_memory(self, invocation: SaveMemoryAction, started: float) -> ToolResult:
         if self._memory_store is None or self._workspace_id is None:
@@ -798,6 +814,7 @@ def _move_verified(
         os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
         dir_fd=source_fd,
     )
+    renamed = False
     try:
         captured = os.fstat(source_handle)
         if stat.S_ISDIR(captured.st_mode):
@@ -833,24 +850,33 @@ def _move_verified(
             src_dir_fd=source_fd,
             dst_dir_fd=destination_fd,
         )
-        try:
-            destination = os.stat(
-                destination_name,
-                dir_fd=destination_fd,
-                follow_symlinks=False,
+        renamed = True
+        destination = os.stat(
+            destination_name,
+            dir_fd=destination_fd,
+            follow_symlinks=False,
+        )
+        if _file_identity(destination) != _file_identity(captured):
+            raise MutationStateUncertain(
+                "move_file destination identity changed after rename"
             )
-            if _file_identity(destination) != _file_identity(captured):
-                raise MutationStateUncertain(
-                    "move_file destination identity changed after rename"
-                )
-        except MutationStateUncertain:
-            raise
-        except OSError as error:
+    except MutationStateUncertain:
+        raise
+    except Exception as error:
+        if renamed:
             raise MutationStateUncertain(
                 "move_file destination could not be verified after rename"
             ) from error
+        raise
     finally:
-        os.close(source_handle)
+        try:
+            os.close(source_handle)
+        except Exception as error:
+            if renamed:
+                raise MutationStateUncertain(
+                    "move_file source handle could not be closed after rename"
+                ) from error
+            raise
 
 
 def _file_identity(value: os.stat_result) -> tuple[int, int, int]:

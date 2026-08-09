@@ -68,6 +68,25 @@ def test_truncated_redaction_removes_long_secret_fragments_but_keeps_short_text(
     assert "normal" in redacted_tail
 
 
+def test_truncated_redaction_repeats_until_repeated_boundary_fragments_are_gone() -> None:
+    """A removal can expose another prefix of the same secret at the boundary."""
+    redactor = Redactor(["ABCDEFGH"])
+
+    redacted_head, redacted_tail = redactor.redact_truncated("ABCDABCD", "tail")
+
+    assert redacted_head == ""
+    assert redacted_tail == "tail"
+
+
+def test_truncated_redaction_restarts_after_later_secret_exposes_earlier_secret() -> None:
+    """Secret ordering cannot leave a newly exposed earlier boundary fragment."""
+    redactor = Redactor(["ABCDEFGH9", "WXYZ12"])
+
+    redacted_head, _ = redactor.redact_truncated("ABCDWXYZ", "tail")
+
+    assert redacted_head == ""
+
+
 def test_truncation_marker_never_exposes_a_registered_marker_secret() -> None:
     """Catch a fixed truncation marker directly inserting a registered secret."""
     redactor = Redactor(["..."])

@@ -563,6 +563,82 @@ def test_move_post_rename_mismatch_reports_uncertain_changes_without_rollback(
     assert displaced.read_text(encoding="utf-8") == "original"
 
 
+@pytest.mark.parametrize("failing_fsync_call", [1, 2])
+def test_move_post_rename_fsync_failure_reports_uncertain_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_fsync_call: int,
+) -> None:
+    """Every parent fsync failure after rename must report the changed paths."""
+    source_directory = tmp_path / "source"
+    destination_directory = tmp_path / "destination"
+    source_directory.mkdir()
+    destination_directory.mkdir()
+    source = source_directory / "file.txt"
+    destination = destination_directory / "moved.txt"
+    source.write_text("content", encoding="utf-8")
+    real_fsync = tools_module.os.fsync
+    calls = 0
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == failing_fsync_call:
+            raise OSError("injected parent fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(tools_module.os, "fsync", fail_selected_fsync)
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="source/file.txt",
+                destination="destination/moved.txt",
+            )
+        )
+
+    assert calls == failing_fsync_call
+    assert result.exit_code is None
+    assert result.stderr.startswith("state_uncertain:")
+    assert result.changes == ["source/file.txt", "destination/moved.txt"]
+    assert not source.exists()
+    assert destination.read_text(encoding="utf-8") == "content"
+
+
+def test_move_any_post_rename_operation_failure_reports_uncertain_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source-handle close is also inside the post-rename uncertainty boundary."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("content", encoding="utf-8")
+    real_close = tools_module.os.close
+    injected = False
+
+    def fail_first_close_after_rename(descriptor: int) -> None:
+        nonlocal injected
+        if not injected and destination.exists() and not source.exists():
+            injected = True
+            real_close(descriptor)
+            raise OSError("injected post-rename close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(tools_module.os, "close", fail_first_close_after_rename)
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="source.txt",
+                destination="destination.txt",
+            )
+        )
+
+    assert injected is True
+    assert result.exit_code is None
+    assert result.stderr.startswith("state_uncertain:")
+    assert result.changes == ["source.txt", "destination.txt"]
+
+
 def test_registry_bounds_reads_and_redacts_file_content(tmp_path: Path) -> None:
     """Catch a dedicated read returning an unbounded or credential-bearing payload."""
     secret = "sk-file-secret"

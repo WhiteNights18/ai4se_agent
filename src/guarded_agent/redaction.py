@@ -50,14 +50,18 @@ class Redactor:
         """
         redacted_head = self.redact(head)
         redacted_tail = self.redact(tail)
-        for secret in self._secrets:
-            head_overlap = _longest_prefix_at_end(secret, redacted_head)
-            if head_overlap >= 4:
-                redacted_head = redacted_head[:-head_overlap]
-            tail_overlap = _longest_prefix_at_end(secret[::-1], redacted_tail[::-1])
-            if tail_overlap >= 4:
-                redacted_tail = redacted_tail[tail_overlap:]
-        return redacted_head, redacted_tail
+        while True:
+            for secret in self._secrets:
+                head_overlap = _longest_prefix_at_end(secret, redacted_head)
+                tail_overlap = _longest_prefix_at_end(secret[::-1], redacted_tail[::-1])
+                if head_overlap >= 4:
+                    redacted_head = redacted_head[:-head_overlap]
+                if tail_overlap >= 4:
+                    redacted_tail = redacted_tail[tail_overlap:]
+                if head_overlap >= 4 or tail_overlap >= 4:
+                    break
+            else:
+                return redacted_head, redacted_tail
 
     def redact_bounded(
         self,
