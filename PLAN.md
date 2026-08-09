@@ -189,6 +189,8 @@ git commit -m "feat: persist tasks audit events and memory"
 
 ### Task 3: Encrypted credential vault and redaction
 
+**Status:** Complete — commits `6eaec9b`, `82e943b`, `4e1c9ef`; 75 tests passing; security review approved.
+
 **Files:**
 - Create: `src/guarded_agent/credentials.py`, `src/guarded_agent/redaction.py`
 - Create: `tests/test_credentials.py`, `tests/test_redaction.py`
@@ -197,7 +199,7 @@ git commit -m "feat: persist tasks audit events and memory"
 - Consumes: filesystem paths only
 - Produces: `CredentialVault.set/get/status/clear`, `CredentialStatus`, and `Redactor.redact(value)`
 
-- [ ] **Step 1: Write failing security tests**
+- [x] **Step 1: Write failing security tests**
 
 ```python
 def test_vault_never_writes_plaintext(tmp_path: Path) -> None:
@@ -211,23 +213,23 @@ def test_redactor_removes_registered_secret() -> None:
     assert "sk-secret-value" not in redactor.redact("failed with sk-secret-value")
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/test_credentials.py tests/test_redaction.py -q`
 
 Expected: missing module imports.
 
-- [ ] **Step 3: Implement minimal secure vault**
+- [x] **Step 3: Implement minimal secure vault**
 
 Use random salt, Scrypt, and AES-GCM (or Fernet backed by authenticated encryption); encode a versioned envelope; atomically replace the vault with mode `0600`; return generic unlock errors; keep secrets out of `repr`, logs, status, and audit payloads.
 
-- [ ] **Step 4: Verify GREEN plus wrong-password behavior**
+- [x] **Step 4: Verify GREEN plus wrong-password behavior**
 
 Run: `pytest tests/test_credentials.py tests/test_redaction.py -q`
 
 Expected: plaintext absence, successful round trip, wrong password rejection, status masking, and clear behavior all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/credentials.py src/guarded_agent/redaction.py tests/test_credentials.py tests/test_redaction.py
