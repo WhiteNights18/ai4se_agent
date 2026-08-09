@@ -162,8 +162,10 @@ def create_web_app(
             database.approvals.approve(approval_id, datetime.now(UTC))
             service.resume(approval.task_id, approval_id)
         else:
-            database.approvals.reject(approval_id, datetime.now(UTC))
-            service.reject_approval(approval.task_id, approval_id)
+            try:
+                service.reject_approval(approval.task_id, approval_id)
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
         return RedirectResponse("/approvals", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/memories", response_class=HTMLResponse)

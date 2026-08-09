@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ from guarded_agent.feedback import FeedbackEngine
 from guarded_agent.governance import GovernanceEngine
 from guarded_agent.providers.base import LLMProvider
 from guarded_agent.redaction import Redactor
-from guarded_agent.storage import Database, Task
+from guarded_agent.storage import ApprovalStatus, Database, Task
 from guarded_agent.subprocesses import CommandRunner
 from guarded_agent.tools import ToolRegistry
 
@@ -100,7 +101,13 @@ class ApplicationService:
         """Resume a paused task with explicit rejection feedback and no side effect."""
         task = self.database.tasks.get(task_id)
         if task.status is not TaskStatus.WAITING_APPROVAL:
-            return task.status
+            raise ValueError("task is not waiting for approval")
+        if self.pending_approval_id(task_id) != approval_id:
+            raise ValueError("approval is not the task's pending action")
+        approval = self.database.approvals.get(approval_id)
+        if approval.status is not ApprovalStatus.PENDING:
+            raise ValueError("approval is not pending")
+        self.database.approvals.reject(approval_id, datetime.now(UTC))
         self.database.tasks.transition_status(
             task_id,
             TaskStatus.RUNNING,

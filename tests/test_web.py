@@ -98,3 +98,44 @@ def test_settings_page_never_accepts_master_password(configured_app) -> None:
             assert response.status_code == 422
 
     asyncio.run(scenario())
+
+
+def test_web_cancel_memory_status_and_csrf_controls(configured_app) -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=configured_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/")
+            token = client.cookies["csrf_token"]
+            created = await client.post(
+                "/tasks",
+                data={"goal": "fix it", "validation_id": "validator-0", "_csrf": token},
+                follow_redirects=False,
+            )
+            task_url = created.headers["location"]
+            task_id = task_url.rsplit("/", 1)[-1]
+            assert (
+                await client.post(
+                    "/tasks",
+                    data={"goal": "second", "validation_id": "validator-0", "_csrf": token},
+                )
+            ).status_code == 409
+            assert (await client.get(f"/api/tasks/{task_id}/status")).json()["status"] == "CREATED"
+            assert (await client.post(f"/tasks/{task_id}/cancel", data={"_csrf": token})).status_code == 200
+            assert (await client.get(f"/api/tasks/{task_id}/status")).json()["status"] == "CANCELLED"
+            saved = await client.post(
+                "/memories", data={"category": "style", "content": "use tests", "_csrf": token}
+            )
+            assert saved.status_code == 200
+            page = await client.get("/memories")
+            memory_id = re.search(r"/memories/([^/]+)/delete", page.text)
+            assert memory_id is not None
+            assert (await client.post(f"/memories/{memory_id.group(1)}/delete", data={"_csrf": token})).status_code == 200
+            assert (await client.post("/memories", data={"category": "x", "content": "y", "_csrf": "bad"})).status_code == 403
+
+    asyncio.run(scenario())
+
+
+def test_web_binds_only_localhost_and_fixed_workspace(tmp_path: Path) -> None:
+    (tmp_path / "guarded-agent.toml").write_text("[validation]\ncommands = []\n")
+    with pytest.raises(ValueError, match="127.0.0.1"):
+        create_web_app(tmp_path, host="0.0.0.0")
