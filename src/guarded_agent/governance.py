@@ -64,6 +64,11 @@ _HARD_DENIED_EXECUTABLES = {
     "sh",
     "zsh",
     "dash",
+    "fish",
+    "csh",
+    "tcsh",
+    "ksh",
+    "ash",
     "sudo",
     "doas",
     "su",
@@ -341,13 +346,15 @@ class GovernanceEngine:
         if not _contains_shell_syntax(argv):
             read_paths = _approved_read_command_paths(argv)
             if read_paths is not None:
+                resolved_paths: list[Path] = []
                 for candidate in read_paths:
-                    self._enforce_candidate_path(candidate)
-                return _decision(
-                    GovernanceOutcome.ALLOW,
-                    "approved_read_command",
-                    "command matches the narrow read-only argv policy",
-                )
+                    resolved_paths.append(self._canonicalize_candidate_path(candidate))
+                if _is_semantically_bounded_read(argv, read_paths, resolved_paths):
+                    return _decision(
+                        GovernanceOutcome.ALLOW,
+                        "approved_read_command",
+                        "command matches the narrow read-only argv policy",
+                    )
 
         return self._approval_decision(
             action, "command_requires_approval", "command argv requires approval"
@@ -475,7 +482,7 @@ def _is_hard_denied(argv: list[str]) -> bool:
         return True
     if argv[0] == "rg" and any(_is_rg_hard_option(argument) for argument in argv[1:]):
         return True
-    if argv[0] == "git" and any(
+    if executable == "git" and any(
         argument == "--output" or argument.startswith("--output=") for argument in argv[1:]
     ):
         return True
@@ -494,7 +501,7 @@ def _is_hard_denied(argv: list[str]) -> bool:
 
 
 def _git_subcommand(argv: list[str]) -> tuple[str, list[str]] | None:
-    if argv[0] != "git":
+    if Path(argv[0]).name != "git":
         return None
 
     index = 1
@@ -540,9 +547,39 @@ def _approved_read_command_paths(argv: list[str]) -> list[str] | None:
     return None
 
 
+def _is_semantically_bounded_read(
+    argv: list[str], submitted_paths: list[str], resolved_paths: list[Path]
+) -> bool:
+    if argv[0] == "rg":
+        return (
+            argv[1] != "--files"
+            and bool(submitted_paths)
+            and not any(_has_expansion_syntax(path) for path in submitted_paths)
+            and all(path.is_file() for path in resolved_paths)
+        )
+    if argv[0:2] == ["git", "status"]:
+        return True
+    if argv[0:2] == ["git", "diff"]:
+        return (
+            "--" in argv[2:]
+            and bool(submitted_paths)
+            and not any(_has_expansion_syntax(path) for path in submitted_paths)
+            and all(path.is_file() for path in resolved_paths)
+        )
+    return False
+
+
+def _has_expansion_syntax(path: str) -> bool:
+    return any(character in path for character in (":", "*", "?", "[", "]"))
+
+
 def _is_rg_hard_option(argument: str) -> bool:
-    return argument in _RG_HARD_OPTIONS or any(
-        argument.startswith(f"{option}=") for option in ("--pre", "--pre-glob", "--file")
+    return (
+        argument in _RG_HARD_OPTIONS
+        or (argument.startswith("-f") and len(argument) > 2)
+        or any(
+            argument.startswith(f"{option}=") for option in ("--pre", "--pre-glob", "--file")
+        )
     )
 
 

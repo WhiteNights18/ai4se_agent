@@ -44,21 +44,30 @@ def engine(tmp_path: Path) -> Iterator[GovernanceEngine]:
         ["doas", "id"],
         ["shutdown", "-h", "now"],
         ["git", "reset", "--hard"],
+        ["/usr/bin/git", "reset", "--hard"],
+        ["./git", "clean", "-fd"],
         ["git", "-C", "src", "reset", "--hard"],
         ["git", "clean", "-fd"],
         ["git", "push", "--force", "origin", "main"],
         ["git", "checkout", "--", "src"],
         ["git", "diff", "--output", "report.patch"],
+        ["/usr/bin/git", "diff", "--output=report.patch"],
         ["git", "diff", "--output=report.patch"],
         ["rg", "--pre", "./filter", "TODO", "src"],
         ["rg", "--pre=./filter", "TODO", "src"],
         ["rg", "--pre-glob=*.py", "TODO", "src"],
         ["rg", "-f", "patterns.txt", "src"],
+        ["rg", "-fpatterns.txt", "src"],
         ["rg", "--file", "patterns.txt", "src"],
         ["rg", "--file=patterns.txt", "src"],
         ["env", "git", "status"],
         ["bash", "-c", "git status"],
         ["sh", "-c", "rm -rf /"],
+        ["fish", "-c", "rm -rf /"],
+        ["csh", "-c", "rm -rf /"],
+        ["tcsh", "-c", "rm -rf /"],
+        ["ksh", "-c", "rm -rf /"],
+        ["ash", "-c", "rm -rf /"],
         ["rm", "-rf", "/"],
     ],
 )
@@ -175,21 +184,21 @@ def test_validator_allowlist_is_an_immutable_startup_snapshot(engine: Governance
 @pytest.mark.parametrize(
     "argv",
     [
-        ["rg", "TODO", "src"],
-        ["rg", "-n", "-i", "TODO", "src", "tests"],
-        ["rg", "TODO", "--line-number", "src"],
-        ["rg", "--fixed-strings", "bash", "src"],
-        ["rg", "--files"],
-        ["rg", "--files", "src", "tests"],
+        ["rg", "TODO", "first.py"],
+        ["rg", "-n", "-i", "TODO", "first.py", "second.py"],
+        ["rg", "TODO", "--line-number", "first.py"],
+        ["rg", "--fixed-strings", "bash", "first.py"],
         ["git", "status"],
         ["git", "status", "--short", "--branch"],
         ["git", "status", "--porcelain=v2", "--", "src"],
-        ["git", "diff", "--", "src"],
-        ["git", "diff", "--stat", "--cached", "--", "src", "tests"],
+        ["git", "diff", "--", "first.py"],
+        ["git", "diff", "--stat", "--cached", "--", "first.py", "second.py"],
     ],
 )
 def test_exact_read_commands_are_allowed(argv: list[str], engine: GovernanceEngine) -> None:
     """Catch the narrow read-only argv allowlist being lost to the approval fallback."""
+    (engine.workspace / "first.py").write_text("first", encoding="utf-8")
+    (engine.workspace / "second.py").write_text("second", encoding="utf-8")
     decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
 
     assert decision.outcome is GovernanceOutcome.ALLOW
@@ -241,6 +250,7 @@ def test_non_allowlisted_commands_require_approval(argv: list[str], engine: Gove
         ["tools/rg", "TODO", "src"],
         ["/usr/bin/git", "status"],
         ["./git", "diff", "--", "src"],
+        ["printf", "git", "reset", "--hard"],
     ],
 )
 def test_path_qualified_read_lookalikes_require_approval(
@@ -257,6 +267,7 @@ def test_path_qualified_read_lookalikes_require_approval(
     "argv",
     [
         ["rg", "TODO", "../outside"],
+        ["rg", "TODO", ".env"],
         ["rg", "--files", ".env"],
         ["git", "status", "--", "../outside"],
         ["git", "diff", "--stat", "--", ".git/config"],
@@ -272,6 +283,54 @@ def test_safe_read_grammar_still_hard_denies_unsafe_pathspecs(
     assert decision.rule_id in {"workspace_boundary", "sensitive_path"}
 
 
+def test_rg_auto_allow_requires_explicit_existing_regular_file_targets(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch recursive or semantic expansion entering the automatic read tier."""
+    source = engine.workspace / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')", encoding="utf-8")
+    (source / "id_rsa").write_text("private", encoding="utf-8")
+
+    commands = [
+        ["rg", "TODO"],
+        ["rg", "--files"],
+        ["rg", "--files", "src/app.py"],
+        ["rg", "TODO", "src"],
+        ["rg", "TODO", "missing.py"],
+        ["rg", "TODO", "*.py"],
+    ]
+
+    for argv in commands:
+        decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+        assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL, argv
+        assert decision.rule_id == "command_requires_approval"
+
+
+def test_git_diff_auto_allow_requires_literal_existing_regular_files(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch repo-wide, directory, missing, or magic pathspec expansion entering auto-read."""
+    source = engine.workspace / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')", encoding="utf-8")
+
+    commands = [
+        ["git", "diff"],
+        ["git", "diff", "--stat"],
+        ["git", "diff", "--", "src"],
+        ["git", "diff", "--", "missing.py"],
+        ["git", "diff", "--", "*.py"],
+        ["git", "diff", "--", "src:file.py"],
+        ["git", "diff", "--", ":(icase).ENV"],
+    ]
+
+    for argv in commands:
+        decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+        assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL, argv
+        assert decision.rule_id == "command_requires_approval"
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -280,6 +339,11 @@ def test_safe_read_grammar_still_hard_denies_unsafe_pathspecs(
         ["sh", "-c", "rm -rf /"],
         ["zsh", "-c", "rm -rf /"],
         ["dash", "-c", "rm -rf /"],
+        ["fish", "-c", "rm -rf /"],
+        ["csh", "-c", "rm -rf /"],
+        ["tcsh", "-c", "rm -rf /"],
+        ["ksh", "-c", "rm -rf /"],
+        ["ash", "-c", "rm -rf /"],
         ["rm", "-rf", "/"],
     ],
 )
