@@ -128,3 +128,56 @@ def test_cancel_moves_a_created_task_through_running_to_cancelled(tmp_path: Path
         "task_cancelled",
     ]
     database.close()
+
+
+def test_resume_at_max_turns_does_not_consume_or_execute_pending_action(tmp_path: Path) -> None:
+    """Catch resume consuming approval after the task has exhausted its turn budget."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "guarded-agent.toml").write_text("[limits]\nmax_turns = 1\n")
+    target = workspace / "obsolete.txt"
+    target.write_text("obsolete")
+    database = Database.open(tmp_path / "agent.sqlite3")
+    service = ApplicationService(database)
+    task = service.create(
+        workspace,
+        "remove obsolete file",
+        [],
+        ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "obsolete.txt"}}),
+    )
+    assert service.run(task.id) is TaskStatus.WAITING_APPROVAL
+    approval_id = service.pending_approval_id(task.id)
+    database.approvals.approve(approval_id, datetime.now(UTC))
+
+    assert service.resume(task.id, approval_id) is TaskStatus.WAITING_APPROVAL
+    assert target.exists()
+    assert database.approvals.get(approval_id).status is ApprovalStatus.APPROVED
+    database.close()
+
+
+def test_resume_after_total_timeout_does_not_consume_or_execute_pending_action(tmp_path: Path) -> None:
+    """Catch resume consuming approval after the task's total runtime limit elapsed."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "guarded-agent.toml").write_text("[limits]\ntotal_timeout_seconds = 1\n")
+    target = workspace / "obsolete.txt"
+    target.write_text("obsolete")
+    database = Database.open(tmp_path / "agent.sqlite3")
+    service = ApplicationService(database)
+    task = service.create(
+        workspace,
+        "remove obsolete file",
+        [],
+        ScriptedMockProvider({"tool": "delete_file", "arguments": {"path": "obsolete.txt"}}),
+    )
+    assert service.run(task.id) is TaskStatus.WAITING_APPROVAL
+    approval_id = service.pending_approval_id(task.id)
+    database.approvals.approve(approval_id, datetime.now(UTC))
+    database.connection.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = ?", ("2000-01-01T00:00:00+00:00", task.id)
+    )
+
+    assert service.resume(task.id, approval_id) is TaskStatus.WAITING_APPROVAL
+    assert target.exists()
+    assert database.approvals.get(approval_id).status is ApprovalStatus.APPROVED
+    database.close()
