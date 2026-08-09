@@ -137,6 +137,8 @@ git commit -m "feat: define harness domain contracts"
 
 ### Task 2: SQLite task, audit, and memory stores
 
+**Status:** Complete — commits `1bab46b`, `9306644`, `5b88ca8`, `b81574e`; 39 tests passing; task review approved with three deferred minors.
+
 **Files:**
 - Create: `src/guarded_agent/storage.py`, `src/guarded_agent/memory.py`
 - Create: `tests/test_storage.py`, `tests/test_memory.py`
@@ -145,7 +147,7 @@ git commit -m "feat: define harness domain contracts"
 - Consumes: domain models from Task 1
 - Produces: `Database.open(path)`, `TaskStore`, `AuditStore.append()`, `MemoryStore.add()` / `search(workspace_id, query, limit=10)`, and an approval repository with `create_pending(...)`, `approve(id, now)`, `reject(id, now)`, and `consume_if_authorized(id, expected_digest, now) -> bool`
 
-- [ ] **Step 1: Write failing persistence tests**
+- [x] **Step 1: Write failing persistence tests**
 
 ```python
 def test_approval_can_be_consumed_only_once(db: Database) -> None:
@@ -160,23 +162,23 @@ def test_memory_search_is_workspace_scoped(memory: MemoryStore) -> None:
     assert [m.content for m in memory.search("w1", "Ruff")] == ["Use Ruff"]
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pytest tests/test_storage.py tests/test_memory.py -q`
 
 Expected: missing store imports.
 
-- [ ] **Step 3: Implement schema and repositories**
+- [x] **Step 3: Implement schema and repositories**
 
 Enable SQLite foreign keys, create normalized tables from SPEC §7, wrap status plus audit writes in transactions, enforce unique turn number and the specified approval state machine. Implement `consume_if_authorized` as one conditional update or one transaction that checks approval, expiry, digest and prior consumption. Use deterministic token matching plus recency for memory search. Do not store model guesses as confirmed memory.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `pytest tests/test_storage.py tests/test_memory.py -q`
 
 Expected: all pass with a temporary on-disk SQLite database.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/guarded_agent/storage.py src/guarded_agent/memory.py tests/test_storage.py tests/test_memory.py
