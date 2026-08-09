@@ -631,6 +631,8 @@ git commit -m "build: package linux binary in gitlab ci"
 
 ### Task 11: User documentation, process evidence, and final verification
 
+**Status:** Complete — commit `50d6235`; final two-stage review found no Critical issues; 316 passed/8 documented out-of-scope Python 3.14 ASGI skips, Ruff, mypy, binary smoke tests and diff check passing.
+
 **Files:**
 - Create: `README.md`, `AGENT_LOG.md`, `REFLECTION.md`, `THIRD_PARTY_LICENSES.md`
 - Modify: `PLAN.md`, `SPEC_PROCESS.md`
@@ -663,7 +665,7 @@ Expected: all commands exit 0, all tests pass, all three demo scenarios pass, an
 
 Compare every SPEC §10 acceptance criterion and course deliverable against repository evidence. Report external-owner actions separately: GitLab remote/public visibility, PR workflow, final hosted CI pass, downloadable artifact retention, and the student's 1500–2500 Chinese-character reflection.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add README.md AGENT_LOG.md REFLECTION.md THIRD_PARTY_LICENSES.md PLAN.md SPEC_PROCESS.md
