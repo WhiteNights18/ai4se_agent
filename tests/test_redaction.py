@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from guarded_agent.redaction import Redactor
 
 
@@ -54,9 +57,62 @@ def test_truncated_redaction_removes_long_secret_fragments_but_keeps_short_text(
     """Catch truncation-boundary fragments of four or more characters remaining visible."""
     redactor = Redactor(["super-secret-token", "key"])
 
-    redacted = redactor.redact_truncated("super-se normal et-token key")
+    redacted_head, redacted_tail = redactor.redact_truncated(
+        "normal super-se", "et-token normal key"
+    )
 
-    assert "super-se" not in redacted
-    assert "et-token" not in redacted
-    assert "key" not in redacted
-    assert "normal" in redacted
+    assert "super-se" not in redacted_head
+    assert "et-token" not in redacted_tail
+    assert "key" not in redacted_tail
+    assert "normal" in redacted_head
+    assert "normal" in redacted_tail
+
+
+def test_truncation_marker_never_exposes_a_registered_marker_secret() -> None:
+    """Catch a fixed truncation marker directly inserting a registered secret."""
+    redactor = Redactor(["..."])
+
+    output, truncated = redactor.redact_bounded(
+        "HEAD", "TAIL", limit_bytes=32, truncated=True
+    )
+
+    assert truncated is True
+    assert "..." not in output
+    assert len(output.encode()) <= 32
+
+
+def test_marker_adjacency_cannot_recompose_a_registered_secret() -> None:
+    """Catch retained text plus the selected marker recomposing a full secret."""
+    secret = "A[~]"
+    redactor = Redactor([secret])
+
+    output, _ = redactor.redact_bounded(
+        "A", "tail", limit_bytes=64, truncated=True
+    )
+
+    assert secret not in output
+
+
+def test_near_limit_secret_uses_bounded_fragment_redaction_memory() -> None:
+    """Catch constructing every prefix/suffix fragment for a near-64 KiB secret."""
+    program = """
+import resource
+resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))
+from guarded_agent.redaction import Redactor
+secret = 's' * 65_000
+redactor = Redactor([secret])
+output, _ = redactor.redact_bounded('HEAD' + secret[:16], secret[-16:] + 'TAIL', limit_bytes=64, truncated=True)
+assert secret[:16] not in output
+assert secret[-16:] not in output
+assert len(output.encode()) <= 64
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr

@@ -9,6 +9,7 @@ import stat
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from time import monotonic
 from typing import Self
@@ -43,6 +44,23 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 _FILE_READ_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 _MAX_DIRECTORY_ENTRIES = 10_000
 _MAX_SEARCH_DEPTH = 64
+
+
+class MutationStateUncertain(RuntimeError):
+    """A mutating syscall completed but its final filesystem state cannot be trusted."""
+
+    def __init__(self, message: str, *, changes: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.changes = changes
+
+
+@dataclass(frozen=True)
+class _MutationTarget:
+    """A canonical mutation target plus identities captured during resolution."""
+
+    parts: tuple[str, ...]
+    expected: os.stat_result | None
+    expected_parent: os.stat_result
 
 
 class ToolRegistry:
@@ -96,6 +114,13 @@ class ToolRegistry:
 
         try:
             return self._dispatch(invocation, started)
+        except MutationStateUncertain as error:
+            return self._failure(
+                action.tool,
+                f"state_uncertain: {error}",
+                started,
+                changes=list(error.changes),
+            )
         except (OSError, PolicyDenied, ValueError) as error:
             return self._failure(action.tool, f"tool failed: {error}", started)
 
@@ -361,14 +386,19 @@ class ToolRegistry:
         encoded = content.encode("utf-8")
         if len(encoded) > min(self._settings.max_output_bytes, 65_536):
             raise ValueError("write content exceeds the configured byte limit")
-        parts = _safe_parts(path)
-        with self._parent_fd(parts) as (parent_fd, name):
+        target = self._resolved_mutation_target(path, must_exist=False)
+        with self._mutation_parent_fd(target) as (parent_fd, name):
             mode = 0o600
             try:
                 existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
-                pass
+                if target.expected is not None:
+                    raise ValueError("write_file target identity changed before replacement")
             else:
+                if target.expected is None or _file_identity(existing) != _file_identity(
+                    target.expected
+                ):
+                    raise ValueError("write_file target identity changed before replacement")
                 if stat.S_ISREG(existing.st_mode):
                     mode = stat.S_IMODE(existing.st_mode)
             temporary = f".guarded-agent-write-{secrets.token_hex(16)}"
@@ -397,27 +427,41 @@ class ToolRegistry:
                 os.close(temporary_fd)
 
     def _delete_file(self, path: str) -> None:
-        parts = _safe_parts(path)
-        with self._parent_fd(parts) as (parent_fd, name):
+        target = self._resolved_mutation_target(path, must_exist=True)
+        with self._mutation_parent_fd(target) as (parent_fd, name):
             target_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if target.expected is None or _file_identity(target_stat) != _file_identity(
+                target.expected
+            ):
+                raise ValueError("delete_file target identity changed before deletion")
             if stat.S_ISDIR(target_stat.st_mode):
                 raise ValueError("delete_file cannot delete a directory")
             os.unlink(name, dir_fd=parent_fd)
             os.fsync(parent_fd)
 
     def _move_file(self, source: str, destination: str) -> None:
-        source_parts = _safe_parts(source)
-        destination_parts = _safe_parts(destination)
+        normalized_source = normalize_relative_posix(source)
+        normalized_destination = normalize_relative_posix(destination)
+        source_target = self._resolved_mutation_target(source, must_exist=True)
+        destination_target = self._resolved_mutation_target(destination, must_exist=False)
         with (
-            self._parent_fd(source_parts) as (source_fd, source_name),
-            self._parent_fd(destination_parts) as (destination_fd, destination_name),
+            self._mutation_parent_fd(source_target) as (source_fd, source_name),
+            self._mutation_parent_fd(destination_target) as (destination_fd, destination_name),
         ):
-            _move_verified(
-                source_fd,
-                source_name,
-                destination_fd,
-                destination_name,
-            )
+            try:
+                _move_verified(
+                    source_fd,
+                    source_name,
+                    destination_fd,
+                    destination_name,
+                    expected_source=source_target.expected,
+                    expected_destination=destination_target.expected,
+                )
+            except MutationStateUncertain as error:
+                raise MutationStateUncertain(
+                    str(error),
+                    changes=(normalized_source, normalized_destination),
+                ) from error
             os.fsync(source_fd)
             if destination_fd != source_fd:
                 os.fsync(destination_fd)
@@ -509,6 +553,74 @@ class ToolRegistry:
         expected = os.stat(resolved, follow_symlinks=False)
         return PurePosixPath(relative_posix).parts, expected
 
+    def _resolved_mutation_target(
+        self,
+        path: str,
+        *,
+        must_exist: bool,
+    ) -> _MutationTarget:
+        """Resolve an existing target or its nearest existing parent through the root fd."""
+        normalized = normalize_relative_posix(path)
+        if is_sensitive_path(normalized):
+            raise PolicyDenied("sensitive paths are unavailable to ordinary tools")
+        submitted_parts = PurePosixPath(normalized).parts
+        stable_root = self._stable_cwd()
+        canonical_root = stable_root.resolve(strict=True)
+
+        resolved_prefix: Path | None = None
+        prefix_length = len(submitted_parts)
+        while prefix_length >= 0:
+            candidate = stable_root.joinpath(*submitted_parts[:prefix_length])
+            try:
+                resolved_prefix = candidate.resolve(strict=True)
+                break
+            except FileNotFoundError:
+                prefix_length -= 1
+            except RuntimeError as error:
+                raise ValueError("path contains an unresolvable symlink") from error
+        if resolved_prefix is None:
+            raise ValueError("workspace root is unavailable")
+        try:
+            resolved_prefix.relative_to(canonical_root)
+        except ValueError as error:
+            raise PolicyDenied("path resolves outside the workspace") from error
+
+        remaining = submitted_parts[prefix_length:]
+        canonical = resolved_prefix.joinpath(*remaining)
+        relative = canonical.relative_to(canonical_root)
+        if relative == Path("."):
+            raise PolicyDenied("path must resolve strictly inside the workspace")
+        relative_posix = relative.as_posix()
+        if is_sensitive_path(relative_posix):
+            raise PolicyDenied("sensitive paths are unavailable to ordinary tools")
+        parts = PurePosixPath(relative_posix).parts
+
+        if remaining:
+            expected = None
+            if must_exist:
+                raise ValueError("mutation target does not exist")
+        else:
+            expected = os.stat(resolved_prefix, follow_symlinks=False)
+        parent = canonical.parent.resolve(strict=True)
+        if parent.relative_to(canonical_root) == Path("."):
+            parent_parts: tuple[str, ...] = ()
+        else:
+            parent_parts = PurePosixPath(parent.relative_to(canonical_root).as_posix()).parts
+        if parent_parts != parts[:-1]:
+            raise ValueError("mutation target parent does not exist")
+        expected_parent = os.stat(parent, follow_symlinks=False)
+        return _MutationTarget(parts, expected, expected_parent)
+
+    @contextmanager
+    def _mutation_parent_fd(
+        self,
+        target: _MutationTarget,
+    ) -> Iterator[tuple[int, str]]:
+        with self._parent_fd(target.parts) as (parent_fd, name):
+            if _file_identity(os.fstat(parent_fd)) != _file_identity(target.expected_parent):
+                raise ValueError("mutation target parent identity changed during secure open")
+            yield parent_fd, name
+
     @contextmanager
     def _parent_fd(self, parts: tuple[str, ...]) -> Iterator[tuple[int, str]]:
         parent_fd = self._open_directory(parts[:-1])
@@ -555,7 +667,14 @@ class ToolRegistry:
             changes=changes or [],
         )
 
-    def _failure(self, tool: ToolName, message: str, started: float) -> ToolResult:
+    def _failure(
+        self,
+        tool: ToolName,
+        message: str,
+        started: float,
+        *,
+        changes: list[str] | None = None,
+    ) -> ToolResult:
         output = _OutputBuffer(self._settings.max_output_bytes)
         output.add(message.encode())
         stderr, stderr_truncated = self._finish_output(output)
@@ -567,7 +686,7 @@ class ToolRegistry:
             stdout_truncated=False,
             stderr_truncated=stderr_truncated,
             duration_ms=_duration_ms(started),
-            changes=[],
+            changes=changes or [],
         )
 
     @staticmethod
@@ -669,6 +788,8 @@ def _move_verified(
     destination_fd: int,
     destination_name: str,
     *,
+    expected_source: os.stat_result | None = None,
+    expected_destination: os.stat_result | None = None,
     before_rename: Callable[[], None] | None = None,
 ) -> None:
     """Verify the source leaf around rename and fail closed on identity changes."""
@@ -681,74 +802,55 @@ def _move_verified(
         captured = os.fstat(source_handle)
         if stat.S_ISDIR(captured.st_mode):
             raise ValueError("move_file cannot move a directory")
+        if expected_source is not None and _file_identity(captured) != _file_identity(
+            expected_source
+        ):
+            raise ValueError("move_file source identity changed before rename")
         if before_rename is not None:
             before_rename()
         current = os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
         if _file_identity(current) != _file_identity(captured):
             raise ValueError("move_file source identity changed before rename")
 
-        renamed = False
         try:
-            os.replace(
-                source_name,
+            current_destination = os.stat(
                 destination_name,
-                src_dir_fd=source_fd,
-                dst_dir_fd=destination_fd,
+                dir_fd=destination_fd,
+                follow_symlinks=False,
             )
-            renamed = True
+        except FileNotFoundError:
+            if expected_destination is not None:
+                raise ValueError("move_file destination identity changed before rename")
+        else:
+            if expected_destination is None or _file_identity(
+                current_destination
+            ) != _file_identity(expected_destination):
+                raise ValueError("move_file destination identity changed before rename")
+
+        os.replace(
+            source_name,
+            destination_name,
+            src_dir_fd=source_fd,
+            dst_dir_fd=destination_fd,
+        )
+        try:
             destination = os.stat(
                 destination_name,
                 dir_fd=destination_fd,
                 follow_symlinks=False,
             )
             if _file_identity(destination) != _file_identity(captured):
-                raise ValueError("move_file destination identity changed after rename")
-        except BaseException:
-            if renamed:
-                _rollback_move_if_unchanged(
-                    source_fd,
-                    source_name,
-                    destination_fd,
-                    destination_name,
-                    _file_identity(captured),
+                raise MutationStateUncertain(
+                    "move_file destination identity changed after rename"
                 )
+        except MutationStateUncertain:
             raise
+        except OSError as error:
+            raise MutationStateUncertain(
+                "move_file destination could not be verified after rename"
+            ) from error
     finally:
         os.close(source_handle)
-
-
-def _rollback_move_if_unchanged(
-    source_fd: int,
-    source_name: str,
-    destination_fd: int,
-    destination_name: str,
-    expected_identity: tuple[int, int, int],
-) -> None:
-    try:
-        destination = os.stat(
-            destination_name,
-            dir_fd=destination_fd,
-            follow_symlinks=False,
-        )
-    except FileNotFoundError:
-        return
-    try:
-        os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        return
-    if _file_identity(destination) != expected_identity:
-        return
-    try:
-        os.replace(
-            destination_name,
-            source_name,
-            src_dir_fd=destination_fd,
-            dst_dir_fd=source_fd,
-        )
-    except OSError:
-        pass
 
 
 def _file_identity(value: os.stat_result) -> tuple[int, int, int]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 _MARKER_CANDIDATES = ("[REDACTED]", "<redacted>", "[MASKED]", "***")
-_TRUNCATION_MARKER = "\n...\n"
+_TRUNCATION_MARKER_CANDIDATES = ("[~]", "[TRUNCATED]", "<truncated>", "[CUT]")
 
 
 class Redactor:
@@ -22,16 +22,13 @@ class Redactor:
             (candidate for candidate in _MARKER_CANDIDATES if all(secret not in candidate for secret in self._secrets)),
             "",
         )
-        fragments = {
-            fragment
-            for secret in self._secrets
-            for length in range(4, len(secret))
-            for fragment in (secret[:length], secret[-length:])
-        }
-        self._truncated_fragment_pattern = (
-            re.compile("|".join(re.escape(fragment) for fragment in sorted(fragments, key=len, reverse=True)))
-            if fragments
-            else None
+        self._truncation_marker = next(
+            (
+                candidate
+                for candidate in _TRUNCATION_MARKER_CANDIDATES
+                if all(secret not in candidate for secret in self._secrets)
+            ),
+            "",
         )
 
     def redact(self, value: str) -> str:
@@ -45,20 +42,22 @@ class Redactor:
                 return redacted
             redacted = scrubbed
 
-    def redact_truncated(self, value: str) -> str:
-        """Redact full secrets and long boundary fragments in retained truncated text.
+    def redact_truncated(self, head: str, tail: str) -> tuple[str, str]:
+        """Redact full secrets and long fragments at the two retained boundaries.
 
         Full secrets shorter than four characters are still removed. Partial fragments
         shorter than four characters are intentionally outside this contract.
         """
-        redacted = self.redact(value)
-        if self._truncated_fragment_pattern is None:
-            return redacted
-        while True:
-            scrubbed = self._truncated_fragment_pattern.sub("", redacted)
-            if scrubbed == redacted:
-                return redacted
-            redacted = scrubbed
+        redacted_head = self.redact(head)
+        redacted_tail = self.redact(tail)
+        for secret in self._secrets:
+            head_overlap = _longest_prefix_at_end(secret, redacted_head)
+            if head_overlap >= 4:
+                redacted_head = redacted_head[:-head_overlap]
+            tail_overlap = _longest_prefix_at_end(secret[::-1], redacted_tail[::-1])
+            if tail_overlap >= 4:
+                redacted_tail = redacted_tail[tail_overlap:]
+        return redacted_head, redacted_tail
 
     def redact_bounded(
         self,
@@ -76,9 +75,9 @@ class Redactor:
             clipped = _utf8_prefix(redacted, limit_bytes)
             return clipped, len(redacted.encode("utf-8")) > limit_bytes
 
-        redacted_head = self.redact_truncated(head)
-        redacted_tail = self.redact_truncated(tail)
-        marker = _utf8_prefix(_TRUNCATION_MARKER, limit_bytes)
+        redacted_head = self.redact(head)
+        redacted_tail = self.redact(tail)
+        marker = _utf8_prefix(self._truncation_marker, limit_bytes)
         remaining = limit_bytes - len(marker.encode("utf-8"))
         head_budget = remaining // 2
         tail_budget = remaining - head_budget
@@ -91,7 +90,9 @@ class Redactor:
             bounded_tail = _utf8_suffix(redacted_tail, tail_budget + unused_head)
         if unused_tail:
             bounded_head = _utf8_prefix(redacted_head, head_budget + unused_tail)
-        return bounded_head + marker + bounded_tail, True
+        bounded_head, bounded_tail = self.redact_truncated(bounded_head, bounded_tail)
+        composed = self.redact(bounded_head + marker + bounded_tail)
+        return _utf8_prefix(composed, limit_bytes), True
 
 
 def _utf8_prefix(value: str, limit_bytes: int) -> str:
@@ -104,3 +105,27 @@ def _utf8_suffix(value: str, limit_bytes: int) -> str:
         return ""
     encoded = value.encode("utf-8")
     return encoded[-limit_bytes:].decode("utf-8", errors="ignore")
+
+
+def _longest_prefix_at_end(pattern: str, value: str) -> int:
+    """Return the longest pattern prefix that is also a value suffix in linear space."""
+    if not pattern or not value:
+        return 0
+    prefix_lengths = [0] * len(pattern)
+    matched = 0
+    for index in range(1, len(pattern)):
+        while matched and pattern[index] != pattern[matched]:
+            matched = prefix_lengths[matched - 1]
+        if pattern[index] == pattern[matched]:
+            matched += 1
+        prefix_lengths[index] = matched
+
+    matched = 0
+    for character in value:
+        while matched and character != pattern[matched]:
+            matched = prefix_lengths[matched - 1]
+        if character == pattern[matched]:
+            matched += 1
+        if matched == len(pattern):
+            matched = prefix_lengths[matched - 1]
+    return matched

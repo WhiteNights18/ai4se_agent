@@ -330,6 +330,113 @@ def test_registry_safely_reopens_an_internal_search_symlink(tmp_path: Path) -> N
     assert result.stdout == "alias-src/inside.py:1:find needle"
 
 
+def test_registry_writes_through_internal_directory_and_leaf_symlinks(tmp_path: Path) -> None:
+    """Internal aliases name canonical mutation targets, including a new leaf."""
+    real = tmp_path / "real"
+    real.mkdir()
+    target = real / "existing.txt"
+    target.write_text("old", encoding="utf-8")
+    directory_alias = tmp_path / "alias-dir"
+    leaf_alias = tmp_path / "alias-file"
+    directory_alias.symlink_to(real.name, target_is_directory=True)
+    leaf_alias.symlink_to(target.relative_to(tmp_path))
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        new_result = registry.execute(
+            action(ToolName.WRITE_FILE, path="alias-dir/new.txt", content="new")
+        )
+        existing_result = registry.execute(
+            action(ToolName.WRITE_FILE, path="alias-file", content="updated")
+        )
+
+    assert new_result.exit_code == 0
+    assert existing_result.exit_code == 0
+    assert (real / "new.txt").read_text(encoding="utf-8") == "new"
+    assert target.read_text(encoding="utf-8") == "updated"
+    assert directory_alias.is_symlink()
+    assert leaf_alias.is_symlink()
+
+
+def test_registry_deletes_and_moves_through_internal_symlinks(tmp_path: Path) -> None:
+    """Delete and move act on resolved targets while preserving alias entries."""
+    real = tmp_path / "real"
+    archive = tmp_path / "archive"
+    real.mkdir()
+    archive.mkdir()
+    delete_target = real / "delete.txt"
+    move_target = real / "move.txt"
+    delete_target.write_text("delete", encoding="utf-8")
+    move_target.write_text("move", encoding="utf-8")
+    delete_alias = tmp_path / "delete-alias"
+    move_alias = tmp_path / "move-alias"
+    archive_alias = tmp_path / "archive-alias"
+    delete_alias.symlink_to(delete_target.relative_to(tmp_path))
+    move_alias.symlink_to(move_target.relative_to(tmp_path))
+    archive_alias.symlink_to(archive.name, target_is_directory=True)
+
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        deleted = registry.execute(action(ToolName.DELETE_FILE, path="delete-alias"))
+        moved = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="move-alias",
+                destination="archive-alias/moved.txt",
+            )
+        )
+
+    assert deleted.exit_code == 0
+    assert moved.exit_code == 0
+    assert not delete_target.exists()
+    assert delete_alias.is_symlink()
+    assert not move_target.exists()
+    assert (archive / "moved.txt").read_text(encoding="utf-8") == "move"
+    assert move_alias.is_symlink()
+    assert archive_alias.is_symlink()
+
+
+def test_registry_denies_all_mutations_through_external_symlinks(tmp_path: Path) -> None:
+    """Canonical mutation resolution must never escape the held workspace root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    outside_file = outside / "outside.txt"
+    outside_file.write_text("outside", encoding="utf-8")
+    (workspace / "outside-dir").symlink_to(outside, target_is_directory=True)
+    (workspace / "outside-file").symlink_to(outside_file)
+    local = workspace / "local.txt"
+    local.write_text("local", encoding="utf-8")
+
+    with ToolRegistry(workspace, Settings(), Redactor([])) as registry:
+        write = registry.execute(
+            action(ToolName.WRITE_FILE, path="outside-dir/new.txt", content="bad")
+        )
+        delete = registry.execute(action(ToolName.DELETE_FILE, path="outside-file"))
+        move_source = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="outside-file",
+                destination="stolen.txt",
+            )
+        )
+        move_destination = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="local.txt",
+                destination="outside-dir/moved.txt",
+            )
+        )
+
+    assert write.exit_code is None
+    assert delete.exit_code is None
+    assert move_source.exit_code is None
+    assert move_destination.exit_code is None
+    assert outside_file.read_text(encoding="utf-8") == "outside"
+    assert not (outside / "new.txt").exists()
+    assert not (outside / "moved.txt").exists()
+    assert local.read_text(encoding="utf-8") == "local"
+
+
 def test_registry_rejects_fifo_reads_without_blocking(tmp_path: Path) -> None:
     """Catch read_file blocking on a FIFO before it can reject the non-regular target."""
     fifo = tmp_path / "pipe"
@@ -404,6 +511,56 @@ def test_verified_move_rejects_an_injected_source_leaf_replacement(tmp_path: Pat
     assert source.read_text(encoding="utf-8") == "attacker"
     assert displaced.read_text(encoding="utf-8") == "original"
     assert not destination.exists()
+
+
+def test_move_post_rename_mismatch_reports_uncertain_changes_without_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch post-rename failure moving an attacker leaf back or claiming no changes."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    displaced = tmp_path / "moved-original.txt"
+    attacker = tmp_path / "attacker.txt"
+    source.write_text("original", encoding="utf-8")
+    attacker.write_text("attacker", encoding="utf-8")
+    real_stat = tools_module.os.stat
+    replaced = False
+
+    def stat_with_post_rename_replacement(
+        path: str | os.PathLike[str],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal replaced
+        if (
+            path == destination.name
+            and dir_fd is not None
+            and not replaced
+            and destination.exists()
+            and not source.exists()
+        ):
+            destination.rename(displaced)
+            attacker.rename(destination)
+            replaced = True
+        return real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(tools_module.os, "stat", stat_with_post_rename_replacement)
+    with ToolRegistry(tmp_path, Settings(), Redactor([])) as registry:
+        result = registry.execute(
+            action(
+                ToolName.MOVE_FILE,
+                source="source.txt",
+                destination="destination.txt",
+            )
+        )
+
+    assert result.exit_code is None
+    assert result.stderr.startswith("state_uncertain:")
+    assert result.changes == ["source.txt", "destination.txt"]
+    assert not source.exists()
+    assert destination.read_text(encoding="utf-8") == "attacker"
+    assert displaced.read_text(encoding="utf-8") == "original"
 
 
 def test_registry_bounds_reads_and_redacts_file_content(tmp_path: Path) -> None:
