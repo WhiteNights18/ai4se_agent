@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,13 +53,10 @@ def _dangerous_action_is_blocked(workspace: Path) -> None:
 def _feedback_correction_passes(workspace: Path) -> None:
     database = _database(workspace)
     try:
-        acceptance = [
-            [
-                sys.executable,
-                "-c",
-                "from pathlib import Path; raise SystemExit(not Path('fixed.txt').exists())",
-            ]
-        ]
+        validator = workspace / "validate-marker"
+        validator.write_text("#!/bin/sh\ntest -f fixed.txt\n", encoding="utf-8")
+        validator.chmod(0o700)
+        acceptance = [[str(validator)]]
         (workspace / "guarded-agent.toml").write_text(
             "[validation]\ncommands = " + json.dumps(acceptance) + "\n",
             encoding="utf-8",

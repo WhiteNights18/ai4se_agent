@@ -1,12 +1,19 @@
-.PHONY: test lint typecheck check
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python)
+
+.PHONY: test lint typecheck quality binary check
 
 test:
-	python -m pytest
+	$(PYTHON) -m pytest
 
 lint:
-	python -m ruff check src tests
+	$(PYTHON) -m ruff check src tests
 
 typecheck:
-	python -m mypy src
+	$(PYTHON) -m mypy src
 
-check: test lint typecheck
+quality: lint typecheck
+
+binary:
+	PYTHON="$(PYTHON)" ./scripts/build_binary.sh
+
+check: test quality

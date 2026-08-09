@@ -96,7 +96,7 @@ python -m guarded_agent run \
   --provider openai-compatible
 ```
 
-完成 Task 10 后，单文件二进制可将上述 `python -m guarded_agent` 前缀替换为 `./guarded-agent`。
+单文件二进制可将上述 `python -m guarded_agent` 前缀替换为 `./guarded-agent`。
 
 ## 测试
 
@@ -123,7 +123,19 @@ chmod +x guarded-agent
 ./guarded-agent web --workspace /absolute/path/to/trusted-project
 ```
 
-尚未生成可下载 artifact：Task 10 的 `guarded-agent.spec` 与构建脚本仍未完成，所以这里不虚构下载链接或已可运行的构建命令。完成该 spec 后，构建命令应以检查进仓库的 spec 为准。当前不提供 Docker、PyPI 包、macOS/Windows 构建或公网部署 URL；这是经用户确认的课程要求偏离，已记录在 `SPEC_PROCESS.md`。
+在 Linux x86_64 上从源码本地构建时，先安装包含 PyInstaller 的构建依赖，再运行检查进仓库的构建入口：
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[build]'
+make binary
+./dist/guarded-agent version
+./dist/guarded-agent demo
+```
+
+成功后产物为 `dist/guarded-agent`。GitLab CI 也会用 Python 3.12 构建同一文件并将其作为 job artifact；本仓库不虚构任何 registry、下载链接或已托管的 CI 结果。当前不提供 Docker、PyPI 包、macOS/Windows 构建或公网部署 URL；这是经用户确认的课程要求偏离，已记录在 `SPEC_PROCESS.md`。
 
 ## 目录结构
 
@@ -147,7 +159,7 @@ Makefile               测试、lint 与类型检查入口
 - 不支持并发任务、多用户协作、公网 WebUI、远程部署或从中途子进程恢复。
 - 不支持不可信/恶意项目，也不能替代容器、虚拟机或操作系统隔离。
 - 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
-- 当前尚无 PyInstaller artifact、构建 spec 或 GitLab CI `unit-test` 实现。
+- 本地构建和 GitLab CI 仅产出未签名的 Linux x86_64 单文件二进制；不存在托管下载链接。
 - Python 3.14 环境会跳过 ASGI Web 测试；请在 Python 3.12 CI 上执行完整该组测试。
 
 ## 许可证
