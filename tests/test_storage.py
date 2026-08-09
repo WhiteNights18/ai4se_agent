@@ -137,7 +137,9 @@ def test_task_status_transition_enforces_the_state_graph(db: Database) -> None:
         db.tasks.transition_status("t1", TaskStatus.RUNNING, event_type="resumed", payload={})
 
 
-@pytest.mark.parametrize("target", [TaskStatus.FAILED, TaskStatus.CANCELLED])
+@pytest.mark.parametrize(
+    "target", [TaskStatus.WAITING_APPROVAL, TaskStatus.FAILED, TaskStatus.CANCELLED]
+)
 def test_created_task_cannot_skip_directly_to_a_terminal_state(
     db: Database, target: TaskStatus
 ) -> None:
