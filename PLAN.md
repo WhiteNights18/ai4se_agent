@@ -408,6 +408,8 @@ git commit -m "feat: add injectable llm providers"
 
 ### Task 7: Agent loop, context builder, and completion gate
 
+**Status:** Complete — commits `10019f3`, `e47494d`; 305 tests passing; review approved.
+
 **Files:**
 - Create: `src/guarded_agent/context.py`, `src/guarded_agent/agent.py`, `src/guarded_agent/service.py`
 - Create: `tests/test_agent_loop.py`, `tests/test_service.py`
@@ -416,7 +418,7 @@ git commit -m "feat: add injectable llm providers"
 - Consumes: provider, stores, governance, tools, feedback, memory, settings
 - Produces: `AgentLoop.step(task_id) -> TaskStatus`, `ApplicationService.create/run/resume/cancel`
 
-- [ ] **Step 1: Write failing end-to-end loop test**
+- [x] **Step 1: Write failing end-to-end loop test**
 
 ```python
 def test_failed_validation_changes_next_mock_action(harness, sample_workspace) -> None:
@@ -427,17 +429,17 @@ def test_failed_validation_changes_next_mock_action(harness, sample_workspace) -
     assert harness.tasks.get(task.id).status is TaskStatus.COMPLETED
 ```
 
-- [ ] **Step 2: Run test and verify RED**
+- [x] **Step 2: Run test and verify RED**
 
 Run: `pytest tests/test_agent_loop.py::test_failed_validation_changes_next_mock_action -q`
 
 Expected: missing `AgentLoop`/service.
 
-- [ ] **Step 3: Implement one-step state machine and context bounds**
+- [x] **Step 3: Implement one-step state machine and context bounds**
 
 Load goal, at most 8 recent turn summaries and 10 related memories; validate action; evaluate governance; pause, deny or execute; verify after mutation; persist turn plus audit; enforce configured limits within the hard maxima. A completion action always invokes selected startup-loaded acceptance commands.
 
-- [ ] **Step 4: Add failing pause/resume and false-completion tests**
+- [x] **Step 4: Add failing pause/resume and false-completion tests**
 
 ```python
 def test_approval_pauses_without_executing(harness) -> None:
@@ -450,13 +452,13 @@ def test_completion_is_rejected_when_acceptance_fails(harness) -> None:
     assert harness.step(task.id) is not TaskStatus.COMPLETED
 ```
 
-- [ ] **Step 5: Implement persisted-action approval resume, cancel, and stop conditions; verify GREEN**
+- [x] **Step 5: Implement persisted-action approval resume, cancel, and stop conditions; verify GREEN**
 
 Run: `pytest tests/test_agent_loop.py tests/test_service.py -q`
 
 Expected: feedback correction, pause/resume from persisted normalized action, denial, expiry/replay, mismatch audit plus next-turn feedback, completion gate, cancellation and all limits pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/guarded_agent/context.py src/guarded_agent/agent.py src/guarded_agent/service.py tests/test_agent_loop.py tests/test_service.py
