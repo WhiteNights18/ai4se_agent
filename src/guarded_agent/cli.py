@@ -17,6 +17,7 @@ from guarded_agent.memory import MemorySource, MemoryTrust
 from guarded_agent.providers.base import LLMProvider
 from guarded_agent.providers.mock import ScriptedMockProvider
 from guarded_agent.providers.openai_compatible import OpenAICompatibleProvider
+from guarded_agent.redaction import Redactor
 from guarded_agent.service import ApplicationService
 from guarded_agent.storage import Database
 
@@ -117,16 +118,24 @@ def web(
     workspace: Annotated[Path, typer.Option(exists=True, file_okay=False, resolve_path=True)],
     host: Annotated[str, typer.Option()] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    provider: Annotated[str, typer.Option()] = "mock",
+    vault: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Start the local-only Web UI for one fixed workspace."""
     try:
         if host != "127.0.0.1":
             raise ValueError("WebUI may only bind to 127.0.0.1")
+        redactor = Redactor([])
+        if provider == "openai-compatible":
+            credential = _vault(vault).get(typer.prompt("Vault password", hide_input=True))
+            redactor = Redactor([credential.api_key])
+        elif provider != "mock":
+            raise ValueError("provider must be 'mock' or 'openai-compatible'")
         import uvicorn
 
         from guarded_agent.web import create_web_app
 
-        uvicorn.run(create_web_app(workspace, host=host), host=host, port=port)
+        uvicorn.run(create_web_app(workspace, host=host, redactor=redactor), host=host, port=port)
     except (ConfigError, OSError, ValueError) as error:
         _fail(str(error))
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Any, cast
 
 from fastapi import FastAPI, Form, HTTPException, Request, status
@@ -27,7 +29,9 @@ _PACKAGE = Path(__file__).parent
 _templates = Jinja2Templates(directory=str(_PACKAGE / "templates"))
 
 
-def create_web_app(workspace: Path, *, host: str = "127.0.0.1") -> FastAPI:
+def create_web_app(
+    workspace: Path, *, host: str = "127.0.0.1", redactor: Redactor | None = None
+) -> FastAPI:
     """Build an app whose workspace and acceptance-command allowlist never change."""
     if host != "127.0.0.1":
         raise ValueError("WebUI may only bind to 127.0.0.1")
@@ -37,25 +41,29 @@ def create_web_app(workspace: Path, *, host: str = "127.0.0.1") -> FastAPI:
     state_directory = fixed_workspace / ".guarded-agent"
     state_directory.mkdir(mode=0o700, exist_ok=True)
     database = Database.open(state_directory / "state.sqlite3")
-    service = ApplicationService(database, configured_validation_commands=validators)
+    payload_redactor = redactor or Redactor([])
+    service = ApplicationService(
+        database, configured_validation_commands=validators, redactor=payload_redactor
+    )
     registered = database.tasks.get_workspace(str(fixed_workspace))
     if registered is None:
         registered = database.tasks.create_workspace(str(fixed_workspace), fixed_workspace.name)
     workspace_id = registered.id
     vault = CredentialVault(fixed_workspace / ".guarded-agent" / "credentials.vault")
-    redactor = Redactor([])
+    create_lock = Lock()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=str(_PACKAGE / "static")), name="static")
 
     @app.middleware("http")
     async def csrf_cookie(request: Request, call_next: Any) -> Response:
+        request.state.csrf_token = request.cookies.get("csrf_token") or secrets.token_urlsafe(32)
         response = cast(Response, await call_next(request))
         if request.cookies.get("csrf_token") is None:
-            response.set_cookie("csrf_token", secrets.token_urlsafe(32), httponly=True, samesite="strict")
+            response.set_cookie("csrf_token", request.state.csrf_token, httponly=True, samesite="strict")
         return response
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
-        return _templates.TemplateResponse(request, name, {"csrf_token": request.cookies.get("csrf_token", ""), **context})
+        return _templates.TemplateResponse(request, name, {"csrf_token": request.state.csrf_token, **context})
 
     def check_csrf(request: Request, token: str) -> None:
         expected = request.cookies.get("csrf_token")
@@ -77,7 +85,9 @@ def create_web_app(workspace: Path, *, host: str = "127.0.0.1") -> FastAPI:
             {
                 "time": event.created_at.isoformat(),
                 "event": event.event_type,
-                "payload": redactor.redact(json.dumps(event.redacted_payload, ensure_ascii=False)),
+                "payload": payload_redactor.redact(
+                    json.dumps(event.redacted_payload, ensure_ascii=False)
+                ),
             }
             for event in events
         ]
@@ -94,15 +104,17 @@ def create_web_app(workspace: Path, *, host: str = "127.0.0.1") -> FastAPI:
         csrf: Annotated[str, Form(alias="_csrf")],
     ) -> RedirectResponse:
         check_csrf(request, csrf)
-        if not validation_id.startswith("validator-"):
+        match = re.fullmatch(r"validator-(0|[1-9][0-9]*)", validation_id)
+        if match is None:
             raise HTTPException(status_code=422, detail="validation_id must select a configured validator")
         try:
-            selected = validators[int(validation_id.removeprefix("validator-"))]
+            selected = validators[int(match.group(1))]
         except (IndexError, ValueError):
             raise HTTPException(status_code=422, detail="validation_id must select a configured validator") from None
-        if any(task.status in _ACTIVE for task in database.tasks.list_for_workspace(workspace_id)):
-            raise HTTPException(status_code=409, detail="only one task may be active")
-        task = service.create(fixed_workspace, goal, [selected], ScriptedMockProvider())
+        with create_lock:
+            if any(task.status in _ACTIVE for task in database.tasks.list_for_workspace(workspace_id)):
+                raise HTTPException(status_code=409, detail="only one task may be active")
+            task = service.create(fixed_workspace, goal, [selected], ScriptedMockProvider())
         return RedirectResponse(f"/tasks/{task.id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -148,8 +160,10 @@ def create_web_app(workspace: Path, *, host: str = "127.0.0.1") -> FastAPI:
         get_task(approval.task_id)
         if decision == "approve":
             database.approvals.approve(approval_id, datetime.now(UTC))
+            service.resume(approval.task_id, approval_id)
         else:
             database.approvals.reject(approval_id, datetime.now(UTC))
+            service.reject_approval(approval.task_id, approval_id)
         return RedirectResponse("/approvals", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/memories", response_class=HTMLResponse)

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from guarded_agent.agent import AgentLoop
 from guarded_agent.config import load_settings
-from guarded_agent.domain import Settings, TaskStatus
+from guarded_agent.domain import FeedbackKind, Settings, TaskStatus
 from guarded_agent.feedback import FeedbackEngine
 from guarded_agent.governance import GovernanceEngine
 from guarded_agent.providers.base import LLMProvider
@@ -94,6 +94,30 @@ class ApplicationService:
             self.database.tasks.transition_status(
                 task_id, TaskStatus.CANCELLED, event_type="task_cancelled", payload={"reason": "user"}
             )
+        return self.database.tasks.get(task_id).status
+
+    def reject_approval(self, task_id: str, approval_id: str) -> TaskStatus:
+        """Resume a paused task with explicit rejection feedback and no side effect."""
+        task = self.database.tasks.get(task_id)
+        if task.status is not TaskStatus.WAITING_APPROVAL:
+            return task.status
+        self.database.tasks.transition_status(
+            task_id,
+            TaskStatus.RUNNING,
+            event_type="approval_rejected",
+            payload={"approval_id": approval_id},
+        )
+        self.database.tasks.delete_pending_action(approval_id)
+        self.database.tasks.add_turn(
+            task_id,
+            len(self.database.tasks.list_turns(task_id)) + 1,
+            {},
+            {
+                "kind": FeedbackKind.POLICY_VIOLATION.value,
+                "message": "approval was rejected by the user",
+                "command_result": None,
+            },
+        )
         return self.database.tasks.get(task_id).status
 
     def pending_approval_id(self, task_id: str) -> str:
