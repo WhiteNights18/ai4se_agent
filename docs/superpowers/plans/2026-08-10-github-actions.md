@@ -28,21 +28,21 @@
 - Consumes: `make test`, `make quality`, `make binary`, `dist/guarded-agent`
 - Produces: GitHub checks `unit-test` and `build-binary`, artifact `guarded-agent-linux-x86_64`
 
-- [ ] **Step 1: Write the failing workflow contract test**
+- [x] **Step 1: Write the failing workflow contract test**
 
 Add a test that loads `.github/workflows/ci.yml`, confirms both jobs use Python 3.12, checks the Makefile/smoke commands, and verifies the uploaded artifact name and path.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `.venv/bin/pytest tests/test_packaging.py -q`
 
 Expected: FAIL because `.github/workflows/ci.yml` does not exist.
 
-- [ ] **Step 3: Implement the minimal workflow and documentation updates**
+- [x] **Step 3: Implement the minimal workflow and documentation updates**
 
 Create the workflow with `pull_request` and `push` triggers, read-only contents permission, dependency installation, repository commands, and `actions/upload-artifact`. Update delivery documents to name GitHub as the current hosted platform and GitLab as compatibility configuration.
 
-- [ ] **Step 4: Verify locally**
+- [x] **Step 4: Verify locally**
 
 Run: `.venv/bin/pytest tests/test_packaging.py -q && make test && make quality && make binary && ./dist/guarded-agent version && ./dist/guarded-agent demo && git diff --check`
 

@@ -582,13 +582,13 @@ git commit -m "feat: add local task control web ui"
 
 ---
 
-### Task 10: Packaging and GitLab CI
+### Task 10: Packaging and hosted CI
 
 **Status:** Complete — commit `154ea5c`; 316 passed/8 documented Python 3.14 ASGI skips; Ruff, mypy, binary `version` and `demo` passing locally.
 
 **Files:**
 - Create: `guarded-agent.spec`, `scripts/build_binary.sh`, `tests/test_packaging.py`
-- Create: `.gitlab-ci.yml`
+- Create: `.gitlab-ci.yml`（课程原始要求）；后续新增 `.github/workflows/ci.yml` 作为实际托管 CI
 - Modify: `pyproject.toml`, `Makefile`
 
 **Interfaces:**
@@ -663,7 +663,7 @@ Expected: all commands exit 0, all tests pass, all three demo scenarios pass, an
 
 - [x] **Step 5: Verify requirements line by line**
 
-Compare every SPEC §10 acceptance criterion and course deliverable against repository evidence. Report external-owner actions separately: GitLab remote/public visibility, PR workflow, final hosted CI pass, downloadable artifact retention, and the student's 1500–2500 Chinese-character reflection.
+Compare every SPEC §10 acceptance criterion and course deliverable against repository evidence. Report external-owner actions separately: GitHub remote/public visibility, PR workflow, final hosted CI pass, downloadable artifact retention, and the student's 1500–2500 Chinese-character reflection.
 
 - [x] **Step 6: Commit**
 

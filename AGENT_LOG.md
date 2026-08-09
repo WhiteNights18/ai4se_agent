@@ -49,7 +49,7 @@
 - **关键 prompt/context：** 用户要求 README 严格按课程文档，分发仅选择最简单的原生二进制，不做公网部署。
 - **RED→GREEN：** packaging tests 先约束 spec、脚本、精确 `unit-test` job 和 artifact；冻结二进制的 `demo` 起初失败，根因为 `sys.executable` 在 PyInstaller 中指向自身，改用临时受控可执行 validator 后通过。
 - **输出/commits：** README `ca1cc20`；PyInstaller、构建脚本和 GitLab CI `154ea5c`。
-- **最新本地证据：** Python 3.14 环境 `316 passed, 8 skipped`；Ruff、mypy、binary build、`version` 和三场景 `demo` 均通过。此证据不等同于 hosted GitLab pipeline pass。
+- **最新本地证据：** Python 3.14 环境 `316 passed, 8 skipped`；Ruff、mypy、binary build、`version` 和三场景 `demo` 均通过。此证据不等同于 hosted CI pass。
 - **教训：** 源码解释器假设在 frozen 运行时会改变；打包 smoke test 必须执行真正产物。
 
 ## 2026-08-10：Task 11 文档人工验收
@@ -62,7 +62,7 @@
 
 | # | 仓库证据与结论 |
 |---|---|
-| 1–2 | `make test` 本地离线返回零；`.gitlab-ci.yml` 存在精确 `unit-test` job。 |
+| 1–2 | `make test` 本地离线返回零；GitHub Actions 与兼容的 `.gitlab-ci.yml` 均存在 `unit-test` job。 |
 | 3 | Mock provider、`AgentLoop` 与 `tests/test_agent_loop.py` 覆盖完整循环。 |
 | 4–6 | paths/governance 测试覆盖越界、符号链接、敏感路径、风险分类、摘要变化和单次消费。 |
 | 7–8 | feedback/agent-loop 测试及 `demo` 覆盖失败修正和禁止虚假完成。 |
@@ -77,5 +77,5 @@
 - **明确的用户决策：** 不做公网部署，因此没有线上 WebUI URL；这是对最终交付清单 URL 条款的已知偏离，不伪造补齐。
 - **前端流程偏离：** 为落实用户要求的最小本地 WebUI，采用 Jinja2 服务端渲染和原生静态资源，未使用 Open Design 或其 skill；`SPEC.md` 已补充理由。
 - **最终两阶段审查：** 规约审查与代码质量/安全审查均无 Critical；据审查将 Python 声明收紧为 3.12.x，并记录 Open Design 取舍。冷启动不同 agent 类型、真实 PR 和远端 CI 等历史/平台证据不能事后伪造。
-- **仍需学生/平台完成：** 将仓库推送至课程要求的平台并设置可见性/助教权限；建立并保留真实 PR/worktree 流程证据；触发并确认最后一次 hosted CI 为 pass；保留可下载的 Linux x86_64 artifact；由学生本人完成 1500–2500 中文字符 `REFLECTION.md`。
-- **GitHub/GitLab 登录：** 本地存在提交历史不代表远端已认证或已推送；推送前由学生完成对应 CLI/凭据登录并确认目标 remote。
+- **托管平台更新（2026-08-10）：** 助教确认平台可任选，用户选择 GitHub。功能分支已推送并创建 PR #1；新增 GitHub Actions 作为实际 hosted CI，保留 GitLab 配置仅作兼容。
+- **仍需学生/平台完成：** 确认最后一次 GitHub Actions workflow 为 pass；保留或下载 Linux x86_64 artifact；合并 PR；由学生本人完成 1500–2500 中文字符 `REFLECTION.md`。

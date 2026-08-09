@@ -107,4 +107,4 @@
 
 实现过程也验证了审计边界的价值：Task 4 的多轮 review 继续发现 path-qualified Git、ripgrep pattern file、symlink 和跨 task 审批变体，说明安全矩阵必须采用封闭规则并以失败测试维护。Task 10 则暴露了规范之外的冻结运行时差异：PyInstaller 中 `sys.executable` 指向打包后的应用自身，demo 因而改用临时受控可执行 validator，并由真实二进制 smoke test 覆盖。
 
-最终范围仍保留用户明确批准的偏离：只交付未签名 Linux x86_64 单文件二进制和 localhost WebUI，不做公网部署，因此没有可访问的线上 URL。仓库包含 `.gitlab-ci.yml` 的精确 `unit-test` job 与 binary artifact job，但 hosted pipeline pass、远端仓库可见性、PR 页面和 artifact 下载保留均属于提交平台后的外部证据，不能由本地结果替代。`REFLECTION.md` 只提供事实模板，1500–2500 中文字符的个人分析必须由学生本人完成。
+最终范围仍保留用户明确批准的偏离：只交付未签名 Linux x86_64 单文件二进制和 localhost WebUI，不做公网部署，因此没有可访问的线上 URL。助教后续确认托管平台可任选，用户选择 GitHub；因此仓库新增 GitHub Actions 作为实际 hosted CI，并保留 `.gitlab-ci.yml` 兼容课程原始检查。hosted workflow pass 与 artifact 保留不能由本地结果替代。`REFLECTION.md` 只提供事实模板，1500–2500 中文字符的个人分析必须由学生本人完成。

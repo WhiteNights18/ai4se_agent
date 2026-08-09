@@ -106,7 +106,7 @@ python -m guarded_agent run \
 make test
 ```
 
-本工作树当前解释器为 Python 3.14 时，ASGI 传输相关 Web 测试会跳过，因为该组合会挂起；`.gitlab-ci.yml` 的 `unit-test` job 使用目标版本 Python 3.12 执行 `make test`。仓库内已有 CI 配置，但是否在托管 GitLab 上成功运行仍须以提交后的实际 pipeline 页面为准，本地验证不能替代 hosted CI pass 记录。
+本工作树当前解释器为 Python 3.14 时，ASGI 传输相关 Web 测试会跳过，因为该组合会挂起；GitHub Actions 的 `unit-test` job 使用目标版本 Python 3.12 执行 `make test` 与 `make quality`。托管结果以仓库的 **Actions** 页面或 Pull Request 的 **Checks** 区域为准，本地验证不能替代 hosted CI pass 记录。仓库同时保留 `.gitlab-ci.yml` 兼容课程原始检查。
 
 ## 机制演示
 
@@ -135,7 +135,7 @@ make binary
 ./dist/guarded-agent demo
 ```
 
-成功后产物为 `dist/guarded-agent`。GitLab CI 也会用 Python 3.12 构建同一文件并将其作为 job artifact；本仓库不虚构任何 registry、下载链接或已托管的 CI 结果。当前不提供 Docker、PyPI 包、macOS/Windows 构建或公网部署 URL；这是经用户确认的课程要求偏离，已记录在 `SPEC_PROCESS.md`。
+成功后产物为 `dist/guarded-agent`。GitHub Actions 的 `build-binary` job 会用 Python 3.12 构建、运行 `version` 与 `demo`，再上传名为 `guarded-agent-linux-x86_64` 的 artifact。获取方式：打开 GitHub 仓库的 **Actions** 页面，进入一次成功的 **CI** workflow，在页面底部 **Artifacts** 下载；artifact 只在 workflow 成功且尚未超过 GitHub 保留期时可用。当前不提供 Docker、PyPI 包、macOS/Windows 构建或公网部署 URL；这是经用户确认的课程要求偏离，已记录在 `SPEC_PROCESS.md`。
 
 ## 目录结构
 
@@ -159,7 +159,7 @@ Makefile               测试、lint 与类型检查入口
 - 不支持并发任务、多用户协作、公网 WebUI、远程部署或从中途子进程恢复。
 - 不支持不可信/恶意项目，也不能替代容器、虚拟机或操作系统隔离。
 - 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
-- 本地构建和 GitLab CI 仅产出未签名的 Linux x86_64 单文件二进制；不存在托管下载链接。
+- 本地构建与 GitHub Actions artifact 仅产出未签名的 Linux x86_64 单文件二进制；不发布长期稳定的 Release 下载链接。
 - Python 3.13 及以上不在声明的支持范围；本地 Python 3.14 仅用于辅助验证且会跳过 ASGI Web 测试，正式测试和构建请使用 Python 3.12。
 
 ## 许可证

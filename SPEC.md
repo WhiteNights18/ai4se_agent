@@ -308,7 +308,7 @@ WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localho
 ## 10. 验收标准
 
 1. `make test` 在无网络、无 API Key 环境中运行全部测试并返回零。
-2. `.gitlab-ci.yml` 包含精确命名为 `unit-test` 的 job。
+2. GitHub Actions 包含 `unit-test` job 并在 Pull Request/push 上运行；兼容的 `.gitlab-ci.yml` 也保留精确命名的 `unit-test` job。
 3. Mock LLM 能驱动“上下文—动作—治理—工具—反馈—停机”的完整循环。
 4. 工作区外路径、符号链接逃逸和敏感文件访问在执行前被拒绝。
 5. 删除或移动等动作进入审批；硬禁令没有批准入口。
@@ -344,4 +344,4 @@ WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localho
 
 ## 13. 交付物范围
 
-交付 `SPEC.md`、`PLAN.md`、`SPEC_PROCESS.md`、`AGENT_LOG.md`、学生填写的 `REFLECTION.md`、README、完整源码、Mock LLM 测试、机制演示、构建脚本、PyInstaller 配置和 `.gitlab-ci.yml`。完整 Git/PR 历史、公开仓库设置、CI 平台最终通过记录和学生个人反思需要仓库所有者在相应平台完成或确认。
+交付 `SPEC.md`、`PLAN.md`、`SPEC_PROCESS.md`、`AGENT_LOG.md`、学生填写的 `REFLECTION.md`、README、完整源码、Mock LLM 测试、机制演示、构建脚本、PyInstaller 配置、GitHub Actions workflow 和兼容的 `.gitlab-ci.yml`。GitHub 是实际托管平台；最终 CI 通过记录、artifact 保留和学生个人反思仍需仓库所有者确认。
