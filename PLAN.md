@@ -240,6 +240,8 @@ git commit -m "feat: add encrypted credential vault"
 
 ### Task 4: Governance engine and approval binding
 
+**Status:** Complete — commits `9727080`, `dbf9ad7`, `ba5ce93`, `673b7f1`; 225 tests passing; deep governance review approved.
+
 **Files:**
 - Create: `src/guarded_agent/governance.py`, `src/guarded_agent/paths.py`
 - Create: `tests/test_governance.py`, `tests/test_paths.py`
@@ -248,7 +250,7 @@ git commit -m "feat: add encrypted credential vault"
 - Consumes: `Action`, `Settings`, canonical workspace, approval repository
 - Produces: `GovernanceEngine.evaluate(action, context) -> GovernanceDecision`, `canonicalize_inside(workspace, candidate) -> Path`, `action_digest(...) -> str`, `create_pending_approval(...)`, and resume authorization through the Task 2 atomic repository API
 
-- [ ] **Step 1: Write failing path and command policy tests**
+- [x] **Step 1: Write failing path and command policy tests**
 
 ```python
 def test_symlink_escape_is_denied(tmp_path: Path) -> None:
@@ -264,17 +266,17 @@ def test_hard_denials_have_no_approval(command: list[str], engine: GovernanceEng
     assert decision.outcome is GovernanceOutcome.DENY
 ```
 
-- [ ] **Step 2: Run targeted tests and verify RED**
+- [x] **Step 2: Run targeted tests and verify RED**
 
 Run: `pytest tests/test_paths.py tests/test_governance.py -q`
 
 Expected: missing governance implementation.
 
-- [ ] **Step 3: Implement policy pipeline**
+- [x] **Step 3: Implement policy pipeline**
 
 Implement the exact SPEC §3.3 path, sensitive-name, tool matrix, command argv ordering and `Policy(version="1.0")`; do not use semantic guesses such as “safe test command”. `canonicalize_inside` accepts only validated relative POSIX paths, resolves existing targets or the nearest existing parent, and permits internal symlinks only when their final realpath remains inside. Hash exactly the specified canonical JSON using SHA-256/UTF-8. Import `GovernanceOutcome` from `guarded_agent.domain`.
 
-- [ ] **Step 4: Add failing approval tampering test**
+- [x] **Step 4: Add failing approval tampering test**
 
 ```python
 def test_approval_does_not_authorize_changed_arguments(engine: GovernanceEngine) -> None:
@@ -288,13 +290,13 @@ Run: `pytest tests/test_governance.py::test_approval_does_not_authorize_changed_
 
 Expected: FAIL until approval verification exists.
 
-- [ ] **Step 5: Implement pending/approved/single-use expiry verification and verify GREEN**
+- [x] **Step 5: Implement pending/approved/single-use expiry verification and verify GREEN**
 
 Run: `pytest tests/test_paths.py tests/test_governance.py -q`
 
 Expected: traversal, internal/external symlink, sensitive paths, exact command tiers, configured-validator bypass prevention, expiry, tampering, resume mismatch audit/feedback and replay tests all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/guarded_agent/governance.py src/guarded_agent/paths.py tests/test_governance.py tests/test_paths.py
