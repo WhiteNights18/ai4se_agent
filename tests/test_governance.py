@@ -48,6 +48,17 @@ def engine(tmp_path: Path) -> Iterator[GovernanceEngine]:
         ["git", "clean", "-fd"],
         ["git", "push", "--force", "origin", "main"],
         ["git", "checkout", "--", "src"],
+        ["git", "diff", "--output", "report.patch"],
+        ["git", "diff", "--output=report.patch"],
+        ["rg", "--pre", "./filter", "TODO", "src"],
+        ["rg", "--pre=./filter", "TODO", "src"],
+        ["rg", "--pre-glob=*.py", "TODO", "src"],
+        ["rg", "-f", "patterns.txt", "src"],
+        ["rg", "--file", "patterns.txt", "src"],
+        ["rg", "--file=patterns.txt", "src"],
+        ["env", "git", "status"],
+        ["bash", "-c", "git status"],
+        ["sh", "-c", "rm -rf /"],
         ["rm", "-rf", "/"],
     ],
 )
@@ -165,9 +176,16 @@ def test_validator_allowlist_is_an_immutable_startup_snapshot(engine: Governance
     "argv",
     [
         ["rg", "TODO", "src"],
-        ["rg", "bash", "src"],
+        ["rg", "-n", "-i", "TODO", "src", "tests"],
+        ["rg", "TODO", "--line-number", "src"],
+        ["rg", "--fixed-strings", "bash", "src"],
+        ["rg", "--files"],
+        ["rg", "--files", "src", "tests"],
         ["git", "status"],
+        ["git", "status", "--short", "--branch"],
+        ["git", "status", "--porcelain=v2", "--", "src"],
         ["git", "diff", "--", "src"],
+        ["git", "diff", "--stat", "--cached", "--", "src", "tests"],
     ],
 )
 def test_exact_read_commands_are_allowed(argv: list[str], engine: GovernanceEngine) -> None:
@@ -197,9 +215,12 @@ def test_read_command_path_operands_cannot_escape(argv: list[str], engine: Gover
     "argv",
     [
         ["rg", "TODO", ";", "shutdown"],
-        ["rg", "--pre=./evil", "TODO", "src"],
+        ["rg", "--json", "TODO", "src"],
+        ["rg", "-g", "*.py", "TODO", "src"],
+        ["git", "status", "--ignored"],
+        ["git", "status", "-unsafe"],
+        ["git", "diff", "--ext-diff", "--", "src"],
         ["git", "status", ">", "report"],
-        ["bash", "-c", "git status"],
         ["pytest", "-q"],
         ["git", "commit", "-m", "message"],
     ],
@@ -210,6 +231,73 @@ def test_non_allowlisted_commands_require_approval(argv: list[str], engine: Gove
 
     assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL
     assert decision.rule_id == "command_requires_approval"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["/usr/bin/rg", "TODO", "src"],
+        ["./rg", "TODO", "src"],
+        ["tools/rg", "TODO", "src"],
+        ["/usr/bin/git", "status"],
+        ["./git", "diff", "--", "src"],
+    ],
+)
+def test_path_qualified_read_lookalikes_require_approval(
+    argv: list[str], engine: GovernanceEngine
+) -> None:
+    """Catch basename matching that auto-allows an attacker-controlled executable."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.REQUIRE_APPROVAL
+    assert decision.rule_id == "command_requires_approval"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["rg", "TODO", "../outside"],
+        ["rg", "--files", ".env"],
+        ["git", "status", "--", "../outside"],
+        ["git", "diff", "--stat", "--", ".git/config"],
+    ],
+)
+def test_safe_read_grammar_still_hard_denies_unsafe_pathspecs(
+    argv: list[str], engine: GovernanceEngine
+) -> None:
+    """Catch a syntactically safe read command skipping path and sensitive-name fences."""
+    decision = engine.evaluate(action(ToolName.RUN_COMMAND, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id in {"workspace_boundary", "sensitive_path"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["env", "sudo", "id"],
+        ["bash", "-c", "rm -rf /"],
+        ["sh", "-c", "rm -rf /"],
+        ["zsh", "-c", "rm -rf /"],
+        ["dash", "-c", "rm -rf /"],
+        ["rm", "-rf", "/"],
+    ],
+)
+def test_configured_validator_cannot_preapprove_shell_or_environment_wrappers(
+    argv: list[str], engine: GovernanceEngine
+) -> None:
+    """Catch exact validator matching that bypasses hard-denied wrapper executables."""
+    governance = GovernanceEngine(
+        workspace=engine.workspace,
+        settings=Settings(validation_commands=[argv]),
+        database=engine.database,
+        task_id="t1",
+    )
+
+    decision = governance.evaluate(action(ToolName.RUN_VALIDATOR, argv=argv))
+
+    assert decision.outcome is GovernanceOutcome.DENY
+    assert decision.rule_id == "hard_denied_command"
 
 
 def test_memory_persistence_requires_approval(engine: GovernanceEngine) -> None:
@@ -366,6 +454,50 @@ def test_approval_is_bound_to_task_workspace_and_policy_version(
     assert engine.authorize_persisted("t1", deletion, approval.id, now) is False
 
 
+def test_cross_task_approval_mismatch_recovers_only_the_current_task(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch a foreign approval ID moving or auditing the approval owner's task."""
+    workspace_id = engine.database.tasks.get("t1").workspace_id
+    engine.database.tasks.create_task(
+        task_id="t2",
+        workspace_id=workspace_id,
+        goal="second task",
+        acceptance_commands=[],
+        limits={},
+    )
+    second_engine = GovernanceEngine(
+        workspace=engine.workspace,
+        settings=engine.settings,
+        database=engine.database,
+        task_id="t2",
+    )
+    deletion = action(ToolName.DELETE_FILE, path="old.py")
+    foreign_approval = second_engine.create_pending_approval("t2", deletion)
+    now = datetime.now(UTC)
+    second_engine.approvals.approve(foreign_approval.id, now)
+    for task_id in ("t1", "t2"):
+        engine.database.tasks.transition_status(
+            task_id, TaskStatus.RUNNING, event_type="task_started", payload={}
+        )
+        engine.database.tasks.transition_status(
+            task_id,
+            TaskStatus.WAITING_APPROVAL,
+            event_type="approval_requested",
+            payload={},
+        )
+
+    assert (
+        engine.authorize_persisted("t1", deletion, foreign_approval.id, now) is False
+    )
+
+    assert engine.database.tasks.get("t1").status is TaskStatus.RUNNING
+    assert engine.database.tasks.get("t2").status is TaskStatus.WAITING_APPROVAL
+    assert engine.audit.list_for_task("t1")[-1].event_type == "approval_mismatch"
+    assert engine.audit.list_for_task("t2")[-1].event_type == "approval_requested"
+    assert engine.approvals.get(foreign_approval.id).status is ApprovalStatus.APPROVED
+
+
 @pytest.mark.parametrize("tool", [ToolName.READ_FILE, ToolName.RUN_COMMAND])
 def test_internal_symlink_cannot_alias_a_sensitive_target(
     tool: ToolName, engine: GovernanceEngine
@@ -384,3 +516,22 @@ def test_internal_symlink_cannot_alias_a_sensitive_target(
 
     assert decision.outcome is GovernanceOutcome.DENY
     assert decision.rule_id == "sensitive_path"
+
+
+def test_canonical_target_snapshot_does_not_follow_a_later_symlink_swap(
+    engine: GovernanceEngine,
+) -> None:
+    """Catch governance handing the executor only the mutable submitted symlink spelling."""
+    first = engine.workspace / "first.txt"
+    second = engine.workspace / "second.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    alias = engine.workspace / "alias"
+    alias.symlink_to(first)
+
+    canonical = engine.canonical_targets(action(ToolName.READ_FILE, path="alias"))
+    alias.unlink()
+    alias.symlink_to(second)
+
+    assert canonical == (first.resolve(strict=True),)
+    assert canonical[0].read_text(encoding="utf-8") == "first"

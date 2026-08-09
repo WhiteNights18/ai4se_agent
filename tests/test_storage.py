@@ -7,7 +7,7 @@ from threading import Barrier, Thread
 import pytest
 
 from guarded_agent.domain import TaskStatus
-from guarded_agent.storage import Database, InvalidTaskTransitionError
+from guarded_agent.storage import ApprovalStatus, Database, InvalidTaskTransitionError
 
 
 @pytest.fixture
@@ -38,8 +38,20 @@ def test_approval_can_be_consumed_only_once(db: Database) -> None:
 
     db.approvals.approve(approval.id, now)
 
-    assert db.approvals.consume_if_authorized(approval.id, "abc", now) is True
-    assert db.approvals.consume_if_authorized(approval.id, "abc", now) is False
+    assert db.approvals.consume_if_authorized(
+        approval.id,
+        expected_digest="abc",
+        expected_task_id="t1",
+        expected_policy_version="1.0",
+        now=now,
+    ) is True
+    assert db.approvals.consume_if_authorized(
+        approval.id,
+        expected_digest="abc",
+        expected_task_id="t1",
+        expected_policy_version="1.0",
+        now=now,
+    ) is False
 
 
 def test_approval_rejects_wrong_digest_and_expired_approval(db: Database) -> None:
@@ -54,8 +66,47 @@ def test_approval_rejects_wrong_digest_and_expired_approval(db: Database) -> Non
     )
     db.approvals.approve(approval.id, now)
 
-    assert db.approvals.consume_if_authorized(approval.id, "tampered", now) is False
-    assert db.approvals.consume_if_authorized(approval.id, "original", now + timedelta(minutes=2)) is False
+    assert db.approvals.consume_if_authorized(
+        approval.id,
+        expected_digest="tampered",
+        expected_task_id="t1",
+        expected_policy_version="1.0",
+        now=now,
+    ) is False
+    assert db.approvals.consume_if_authorized(
+        approval.id,
+        expected_digest="original",
+        expected_task_id="t1",
+        expected_policy_version="1.0",
+        now=now + timedelta(minutes=2),
+    ) is False
+
+
+def test_atomic_consume_rechecks_policy_after_a_prior_read(db: Database) -> None:
+    """Catch a policy mutation winning a race between authorization read and SQL consume."""
+    now = datetime.now(UTC)
+    approval = db.approvals.create_pending(
+        task_id="t1",
+        action_digest="abc",
+        policy_version="1.0",
+        summary="delete old.py",
+    )
+    db.approvals.approve(approval.id, now)
+    assert db.approvals.get(approval.id).policy_version == "1.0"
+    db.connection.execute(
+        "UPDATE approvals SET policy_version = '2.0' WHERE id = ?", (approval.id,)
+    )
+
+    consumed = db.approvals.consume_if_authorized(
+        approval.id,
+        expected_digest="abc",
+        expected_task_id="t1",
+        expected_policy_version="1.0",
+        now=now,
+    )
+
+    assert consumed is False
+    assert db.approvals.get(approval.id).status is ApprovalStatus.APPROVED
 
 
 def test_approval_requires_an_existing_task(db: Database) -> None:
@@ -194,7 +245,15 @@ def test_two_connections_can_consume_an_approval_only_once(tmp_path: Path) -> No
 
     def consume(database: Database) -> None:
         barrier.wait()
-        results.append(database.approvals.consume_if_authorized(approval.id, "abc", now))
+        results.append(
+            database.approvals.consume_if_authorized(
+                approval.id,
+                expected_digest="abc",
+                expected_task_id="t1",
+                expected_policy_version="1.0",
+                now=now,
+            )
+        )
 
     first = Thread(target=consume, args=(db1,))
     second = Thread(target=consume, args=(db2,))

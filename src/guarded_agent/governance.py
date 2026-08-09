@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,11 @@ _FILE_PATH_TOOLS = {
 }
 _PATH_ARGUMENT_KEYS = {"path", "source", "destination", "source_path", "destination_path"}
 _HARD_DENIED_EXECUTABLES = {
+    "env",
+    "bash",
+    "sh",
+    "zsh",
+    "dash",
     "sudo",
     "doas",
     "su",
@@ -67,8 +73,42 @@ _HARD_DENIED_EXECUTABLES = {
     "halt",
     "poweroff",
 }
-_SHELL_INTERPRETERS = {"sh", "bash", "dash", "zsh", "fish", "csh", "tcsh", "ksh"}
 _SHELL_TOKENS = {">", ">>", "<", "<<", "|", "||", "&&", ";"}
+_RG_SAFE_FLAGS = {"-n", "--line-number", "-i", "--ignore-case", "-F", "--fixed-strings"}
+_RG_HARD_OPTIONS = {"--pre", "--pre-glob", "-f", "--file"}
+_GIT_STATUS_SAFE_FLAGS = {
+    "-s",
+    "--short",
+    "-b",
+    "--branch",
+    "--porcelain",
+    "--porcelain=v1",
+    "--porcelain=v2",
+    "--long",
+    "--no-renames",
+    "--renames",
+    "--ahead-behind",
+    "--no-ahead-behind",
+    "--untracked-files",
+}
+_GIT_DIFF_SAFE_FLAGS = {
+    "--stat",
+    "--numstat",
+    "--shortstat",
+    "--summary",
+    "--name-only",
+    "--name-status",
+    "--check",
+    "--cached",
+    "--staged",
+    "--no-renames",
+    "--minimal",
+    "--patience",
+    "--histogram",
+    "--binary",
+    "--full-index",
+    "--no-color",
+}
 
 
 class _SensitivePathDenied(PolicyDenied):
@@ -118,6 +158,20 @@ class GovernanceEngine:
     @property
     def task_id(self) -> str:
         return self._task_id
+
+    def canonical_targets(self, action: Action) -> tuple[Path, ...]:
+        """Return policy-checked canonical targets for a file action.
+
+        This is a governance snapshot, not an execution-time TOCTOU guarantee. Task 5 must
+        consume these targets with a workspace-dirfd beneath/no-follow primitive and must not
+        reopen the submitted path spelling after approval.
+        """
+        if action.tool not in _FILE_PATH_TOOLS and action.tool is not ToolName.MOVE_FILE:
+            return ()
+        return tuple(
+            self._canonicalize_candidate_path(candidate)
+            for candidate in _file_path_values(action)
+        )
 
     def evaluate(self, action: Action) -> GovernanceDecision:
         """Run the complete policy pipeline and fail closed on evaluation errors."""
@@ -188,11 +242,17 @@ class GovernanceEngine:
             mismatch_reason = "approval is not approved"
 
         if mismatch_reason is None and expected_digest is not None:
-            if self.approvals.consume_if_authorized(approval_id, expected_digest, now):
+            if self.approvals.consume_if_authorized(
+                approval_id,
+                expected_digest=expected_digest,
+                expected_task_id=self.task_id,
+                expected_policy_version=self.policy.version,
+                now=now,
+            ):
                 return True
             mismatch_reason = "approval expired or was already consumed"
 
-        self._record_approval_mismatch(approval.task_id, approval_id, cast(str, mismatch_reason))
+        self._record_approval_mismatch(self.task_id, approval_id, cast(str, mismatch_reason))
         return False
 
     def _evaluate(self, action: Action) -> GovernanceDecision:
@@ -201,7 +261,7 @@ class GovernanceEngine:
             raise TypeError("action arguments must be an object")
 
         if tool in _FILE_PATH_TOOLS or tool is ToolName.MOVE_FILE:
-            self._enforce_file_paths(action)
+            self.canonical_targets(action)
 
         if tool in _READ_ONLY_TOOLS:
             return _decision(GovernanceOutcome.ALLOW, "read_only", "read-only action")
@@ -233,13 +293,13 @@ class GovernanceEngine:
 
         if tool is ToolName.RUN_VALIDATOR:
             argv = _validated_argv(action.arguments)
+            if _is_hard_denied(argv):
+                return _decision(
+                    GovernanceOutcome.DENY,
+                    "hard_denied_command",
+                    "configured validators cannot override hard command denials",
+                )
             if tuple(argv) in self._validation_commands:
-                if _is_hard_denied(argv):
-                    return _decision(
-                        GovernanceOutcome.DENY,
-                        "hard_denied_command",
-                        "configured validators cannot override hard command denials",
-                    )
                 for candidate in _command_path_candidates(argv):
                     self._enforce_candidate_path(candidate)
                 return _decision(
@@ -258,17 +318,16 @@ class GovernanceEngine:
 
         return _decision(GovernanceOutcome.DENY, "unknown_tool", "tool is not in policy version 1.0")
 
-    def _enforce_file_paths(self, action: Action) -> None:
-        path_values = _file_path_values(action)
-        for candidate in path_values:
-            self._enforce_candidate_path(candidate)
-
-    def _enforce_candidate_path(self, candidate: str) -> None:
+    def _canonicalize_candidate_path(self, candidate: str) -> Path:
         normalized = normalize_relative_posix(candidate)
         resolved = canonicalize_inside(self.workspace, normalized)
         resolved_relative = resolved.relative_to(self.workspace).as_posix()
         if is_sensitive_path(normalized) or is_sensitive_path(resolved_relative):
             raise _SensitivePathDenied("sensitive paths are unavailable to ordinary tools")
+        return resolved
+
+    def _enforce_candidate_path(self, candidate: str) -> None:
+        self._canonicalize_candidate_path(candidate)
 
     def _evaluate_command(self, action: Action) -> GovernanceDecision:
         argv = _validated_argv(action.arguments)
@@ -414,6 +473,12 @@ def _is_hard_denied(argv: list[str]) -> bool:
     executable = Path(argv[0]).name
     if executable in _HARD_DENIED_EXECUTABLES:
         return True
+    if argv[0] == "rg" and any(_is_rg_hard_option(argument) for argument in argv[1:]):
+        return True
+    if argv[0] == "git" and any(
+        argument == "--output" or argument.startswith("--output=") for argument in argv[1:]
+    ):
+        return True
     git_invocation = _git_subcommand(argv)
     if git_invocation is not None:
         subcommand, arguments = git_invocation
@@ -429,18 +494,10 @@ def _is_hard_denied(argv: list[str]) -> bool:
 
 
 def _git_subcommand(argv: list[str]) -> tuple[str, list[str]] | None:
-    git_index = next(
-        (
-            index
-            for index, argument in enumerate(argv)
-            if argument == "git" or (index == 0 and Path(argument).name == "git")
-        ),
-        None,
-    )
-    if git_index is None:
+    if argv[0] != "git":
         return None
 
-    index = git_index + 1
+    index = 1
     options_with_values = {
         "-C",
         "-c",
@@ -464,8 +521,6 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]] | None:
 
 
 def _contains_shell_syntax(argv: list[str]) -> bool:
-    if Path(argv[0]).name in _SHELL_INTERPRETERS:
-        return True
     return any(
         argument in _SHELL_TOKENS or "$(" in argument or "`" in argument
         for argument in argv
@@ -473,25 +528,80 @@ def _contains_shell_syntax(argv: list[str]) -> bool:
 
 
 def _approved_read_command_paths(argv: list[str]) -> list[str] | None:
-    executable = Path(argv[0]).name
-    if executable == "rg":
-        if any(argument == "--pre" or argument.startswith("--pre=") for argument in argv[1:]):
-            return None
-        positionals = [argument for argument in argv[1:] if not argument.startswith("-")]
-        return positionals[1:] if positionals else []
-
-    if executable != "git" or len(argv) < 2 or argv[1] not in {"status", "diff"}:
+    if argv[0] == "rg":
+        return _rg_read_paths(argv)
+    if argv[0] != "git" or len(argv) < 2:
         return None
 
-    remainder = argv[2:]
-    if "--" in remainder:
-        separator = remainder.index("--")
-        return remainder[separator + 1 :]
-    return [
-        argument
-        for argument in remainder
-        if not argument.startswith("-") and ("/" in argument or argument.startswith("."))
-    ]
+    if argv[1] == "status":
+        return _git_read_paths(argv[2:], _is_safe_git_status_flag)
+    if argv[1] == "diff":
+        return _git_read_paths(argv[2:], _is_safe_git_diff_flag)
+    return None
+
+
+def _is_rg_hard_option(argument: str) -> bool:
+    return argument in _RG_HARD_OPTIONS or any(
+        argument.startswith(f"{option}=") for option in ("--pre", "--pre-glob", "--file")
+    )
+
+
+def _rg_read_paths(argv: list[str]) -> list[str] | None:
+    arguments = argv[1:]
+    if not arguments:
+        return None
+    if arguments[0] == "--files":
+        file_paths = arguments[1:]
+        return file_paths if all(not path.startswith("-") for path in file_paths) else None
+
+    index = 0
+    while index < len(arguments) and arguments[index] in _RG_SAFE_FLAGS:
+        index += 1
+    if index >= len(arguments) or arguments[index].startswith("-"):
+        return None
+    search_paths: list[str] = []
+    for argument in arguments[index + 1 :]:
+        if argument in _RG_SAFE_FLAGS:
+            continue
+        if argument.startswith("-"):
+            return None
+        search_paths.append(argument)
+    return search_paths
+
+
+def _git_read_paths(
+    arguments: list[str], is_safe_flag: Callable[[str], bool]
+) -> list[str] | None:
+    if "--" in arguments:
+        separator = arguments.index("--")
+        flags = arguments[:separator]
+        paths = arguments[separator + 1 :]
+    else:
+        flags = arguments
+        paths = []
+    if not all(is_safe_flag(flag) for flag in flags):
+        return None
+    return paths
+
+
+def _is_safe_git_status_flag(flag: str) -> bool:
+    if flag in _GIT_STATUS_SAFE_FLAGS:
+        return True
+    return flag in {"-u", "-uno", "-unormal", "-uall"} or flag in {
+        "--untracked-files=no",
+        "--untracked-files=normal",
+        "--untracked-files=all",
+    }
+
+
+def _is_safe_git_diff_flag(flag: str) -> bool:
+    if flag in _GIT_DIFF_SAFE_FLAGS:
+        return True
+    return (
+        (flag.startswith("-U") and flag[2:].isdigit())
+        or (flag.startswith("--unified=") and flag.removeprefix("--unified=").isdigit())
+        or flag in {"--color=always", "--color=never", "--color=auto"}
+    )
 
 
 def _command_path_candidates(argv: list[str]) -> list[str]:

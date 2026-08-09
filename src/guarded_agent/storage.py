@@ -536,14 +536,30 @@ class ApprovalStore:
             raise KeyError(f"approval not found: {approval_id}")
         return _approval_from_row(row)
 
-    def consume_if_authorized(self, approval_id: str, expected_digest: str, now: datetime) -> bool:
+    def consume_if_authorized(
+        self,
+        approval_id: str,
+        *,
+        expected_digest: str,
+        expected_task_id: str,
+        expected_policy_version: str,
+        now: datetime,
+    ) -> bool:
         now_value = _timestamp(now)
         with self._database.transaction() as connection:
             consumed = connection.execute(
                 """UPDATE approvals SET status = 'CONSUMED', consumed_at = ?
-                   WHERE id = ? AND action_digest = ? AND status = 'APPROVED'
+                   WHERE id = ? AND action_digest = ? AND task_id = ? AND policy_version = ?
+                     AND status = 'APPROVED'
                      AND (expires_at IS NULL OR expires_at > ?)""",
-                (now_value, approval_id, expected_digest, now_value),
+                (
+                    now_value,
+                    approval_id,
+                    expected_digest,
+                    expected_task_id,
+                    expected_policy_version,
+                    now_value,
+                ),
             ).rowcount
         return consumed == 1
 
