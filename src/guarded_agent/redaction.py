@@ -26,4 +26,9 @@ class Redactor:
         """Return text with every registered secret replaced in one regex pass."""
         if self._pattern is None:
             return value
-        return self._pattern.sub(self._marker, value)
+        redacted = self._pattern.sub(self._marker, value)
+        while True:
+            scrubbed = self._pattern.sub("", redacted)
+            if scrubbed == redacted:
+                return redacted
+            redacted = scrubbed

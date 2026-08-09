@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import json
 import os
 import stat
@@ -123,6 +124,8 @@ class CredentialVault:
             failure = CredentialError()
         if failure is not None:
             raise failure
+        if len(content) > _MAX_VAULT_BYTES:
+            raise CredentialError()
         self._atomic_write(content)
 
     def get(self, master_password: str) -> Credential:
@@ -199,7 +202,8 @@ def _derive_key(master_password: str, salt: bytes) -> bytes:
 
 
 def _load_envelope(path: Path) -> _Envelope:
-    raw = path.read_bytes()
+    with path.open("rb") as vault_file:
+        raw = vault_file.read(_MAX_VAULT_BYTES + 1)
     if len(raw) > _MAX_VAULT_BYTES:
         raise ValueError("vault exceeds maximum size")
     parsed: Any = json.loads(raw, object_pairs_hook=_reject_duplicate_fields)
@@ -290,28 +294,61 @@ def _validate_endpoint(endpoint: Any) -> None:
     if (
         len(endpoint) > _MAX_ENDPOINT_LENGTH
         or endpoint != endpoint.strip()
+        or not endpoint.isascii()
         or _has_control_characters(endpoint)
+        or any(character.isspace() or character == "\\" for character in endpoint)
     ):
         raise ValueError("invalid endpoint")
     try:
         parts = urlsplit(endpoint)
+        hostname = parts.hostname
         port = parts.port
     except (UnicodeError, ValueError):
         raise ValueError("invalid endpoint") from None
     if (
         parts.scheme not in {"http", "https"}
         or not parts.netloc
+        or hostname is None
+        or not _is_valid_hostname(hostname)
         or parts.username is not None
         or parts.password is not None
         or parts.query
         or parts.fragment
         or port is not None and not 1 <= port <= 65535
+        or parts.scheme == "http" and not _is_loopback_hostname(hostname)
     ):
         raise ValueError("invalid endpoint")
 
 
 def _has_control_characters(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _is_valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        normalized = hostname.removesuffix(".")
+        if not normalized or len(normalized) > 253:
+            return False
+        labels = normalized.split(".")
+        return all(
+            1 <= len(label) <= 63
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and all(character.isalnum() or character == "-" for character in label)
+            for label in labels
+        )
+    return True
+
+
+def _is_loopback_hostname(hostname: str) -> bool:
+    if hostname.removesuffix(".").lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _sync_directory(path: Path) -> None:

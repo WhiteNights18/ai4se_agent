@@ -118,6 +118,10 @@ def test_vault_status_only_exposes_authenticated_metadata_after_unlock(tmp_path:
         "https://models.example.test/v1?token=value",
         "https://models.example.test/v1#section",
         "https://models.example.test/\n",
+        "https://exa mple.test/v1",
+        "https://:443/v1",
+        "https://models.example.test:99999/v1",
+        "http://models.example.test/v1",
         "https://" + "a" * 2050,
     ],
 )
@@ -126,6 +130,23 @@ def test_vault_rejects_unsafe_endpoint_forms(tmp_path: Path, endpoint: str) -> N
 
     with pytest.raises(ValueError, match="endpoint"):
         vault.set("openai-compatible", "sk-secret-value", "master-pass", endpoint=endpoint)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://models.example.test/v1",
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://[::1]:8080/v1",
+    ],
+)
+def test_vault_accepts_https_and_loopback_http_endpoints(tmp_path: Path, endpoint: str) -> None:
+    vault = CredentialVault(tmp_path / "vault.bin")
+
+    vault.set("openai-compatible", "sk-secret-value", "master-pass", endpoint=endpoint)
+
+    assert vault.get("master-pass").endpoint == endpoint
 
 
 @pytest.mark.parametrize(
@@ -158,16 +179,57 @@ def test_vault_rejects_oversized_and_malformed_envelopes_before_unlocking(tmp_pa
     with pytest.raises(CredentialUnlockError, match="^unable to unlock credentials$"):
         vault.get("master-pass")
 
-    malformed = {
-        "version": True,
-        "kdf": {"name": "scrypt", "n": 2**15, "r": 8, "p": 1, "length": 32},
-        "salt": base64.b64encode(os.urandom(15)).decode("ascii"),
-        "nonce": base64.b64encode(os.urandom(12)).decode("ascii"),
-        "ciphertext": base64.b64encode(os.urandom(16)).decode("ascii"),
-    }
-    vault_path.write_text(json.dumps(malformed), encoding="utf-8")
+
+def test_vault_rejects_a_15_byte_salt_without_relying_on_a_version_error(tmp_path: Path) -> None:
+    vault_path = tmp_path / "vault.bin"
+    vault = CredentialVault(vault_path)
+    vault.set("openai-compatible", "sk-secret-value", "master-pass")
+    envelope = json.loads(vault_path.read_text(encoding="utf-8"))
+    envelope["salt"] = base64.b64encode(os.urandom(15)).decode("ascii")
+    vault_path.write_text(json.dumps(envelope), encoding="utf-8")
+
     with pytest.raises(CredentialUnlockError, match="^unable to unlock credentials$"):
         vault.get("master-pass")
+
+
+def test_vault_rejects_an_11_byte_nonce_without_relying_on_a_version_error(tmp_path: Path) -> None:
+    vault_path = tmp_path / "vault.bin"
+    vault = CredentialVault(vault_path)
+    vault.set("openai-compatible", "sk-secret-value", "master-pass")
+    envelope = json.loads(vault_path.read_text(encoding="utf-8"))
+    envelope["nonce"] = base64.b64encode(os.urandom(11)).decode("ascii")
+    vault_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    with pytest.raises(CredentialUnlockError, match="^unable to unlock credentials$"):
+        vault.get("master-pass")
+
+
+def test_vault_rejects_a_ciphertext_shorter_than_the_authentication_tag(tmp_path: Path) -> None:
+    vault_path = tmp_path / "vault.bin"
+    vault = CredentialVault(vault_path)
+    vault.set("openai-compatible", "sk-secret-value", "master-pass")
+    envelope = json.loads(vault_path.read_text(encoding="utf-8"))
+    envelope["ciphertext"] = base64.b64encode(os.urandom(15)).decode("ascii")
+    vault_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    with pytest.raises(CredentialUnlockError, match="^unable to unlock credentials$"):
+        vault.get("master-pass")
+
+
+def test_vault_rejects_an_oversized_update_without_replacing_existing_credentials(
+    tmp_path: Path,
+) -> None:
+    vault_path = tmp_path / "vault.bin"
+    vault = CredentialVault(vault_path)
+    vault.set("openai-compatible", "old-secret", "master-pass")
+    oversized_key = "k" * 50_000
+
+    with pytest.raises(CredentialError, match="^unable to store credentials$") as captured:
+        vault.set("openai-compatible", oversized_key, "master-pass")
+
+    assert oversized_key not in repr(captured.value)
+    assert oversized_key not in str(captured.value)
+    assert vault.get("master-pass").api_key == "old-secret"
 
 
 def test_vault_rejects_duplicate_envelope_fields(tmp_path: Path) -> None:

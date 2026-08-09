@@ -29,6 +29,15 @@ def test_redactor_marker_never_reintroduces_registered_secrets() -> None:
     assert all(secret not in redacted for secret in secrets)
 
 
+def test_redactor_removes_secrets_recomposed_across_a_replacement_boundary() -> None:
+    secrets = ["secret", "x[REDACTED]y"]
+    redactor = Redactor(secrets)
+
+    redacted = redactor.redact("xsecrety")
+
+    assert all(secret not in redacted for secret in secrets)
+
+
 def test_redactor_ignores_empty_secrets_without_changing_unrelated_text() -> None:
     redactor = Redactor(["", "sk-secret-value"])
 
