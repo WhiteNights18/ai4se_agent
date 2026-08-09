@@ -1,7 +1,7 @@
 # SPEC 与 PLAN 协作过程
 
 **日期：** 2026-08-09  
-**当前阶段：** 冷启动审计已完成并据已确认 resolution 修订 `SPEC.md` 与 `PLAN.md`；可进入 Task 1 实现。
+**当前阶段：** 冷启动审计和 Task 0–10 已完成；Task 11 正在进行最终评审、验证与外部交付清单核对。
 
 ## 1. 使用的方法
 
@@ -100,3 +100,11 @@
 ### 6.4 审计结论
 
 审计前，Task 1 与 Task 4 不能仅凭规范无歧义实现。上述已确认修订关闭了列出的暂停点；实现工作仍必须遵守 PLAN 的 RED→GREEN 证据与后续验证门禁。
+
+## 7. 冷启动修订的实现结果与交付偏离
+
+冷启动提出的严格 DTO、配置上限、路径围栏、命令矩阵、摘要绑定和审批恢复要求均在 Task 1、2、4、5、7 中落地，并由各 task report 的 RED→GREEN 与 review 记录验证。尤其是 validator 从“任意验收文本”收紧为启动时配置的 opaque selector，避免 WebUI 和 LLM 绕过命令治理；审批恢复从模糊的“继续执行”变为加载持久化动作、重新评估、重算摘要并原子消费。
+
+实现过程也验证了审计边界的价值：Task 4 的多轮 review 继续发现 path-qualified Git、ripgrep pattern file、symlink 和跨 task 审批变体，说明安全矩阵必须采用封闭规则并以失败测试维护。Task 10 则暴露了规范之外的冻结运行时差异：PyInstaller 中 `sys.executable` 指向打包后的应用自身，demo 因而改用临时受控可执行 validator，并由真实二进制 smoke test 覆盖。
+
+最终范围仍保留用户明确批准的偏离：只交付未签名 Linux x86_64 单文件二进制和 localhost WebUI，不做公网部署，因此没有可访问的线上 URL。仓库包含 `.gitlab-ci.yml` 的精确 `unit-test` job 与 binary artifact job，但 hosted pipeline pass、远端仓库可见性、PR 页面和 artifact 下载保留均属于提交平台后的外部证据，不能由本地结果替代。`REFLECTION.md` 只提供事实模板，1500–2500 中文字符的个人分析必须由学生本人完成。

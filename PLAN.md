@@ -584,6 +584,8 @@ git commit -m "feat: add local task control web ui"
 
 ### Task 10: Packaging and GitLab CI
 
+**Status:** Complete — commit `154ea5c`; 316 passed/8 documented Python 3.14 ASGI skips; Ruff, mypy, binary `version` and `demo` passing locally.
+
 **Files:**
 - Create: `guarded-agent.spec`, `scripts/build_binary.sh`, `tests/test_packaging.py`
 - Create: `.gitlab-ci.yml`
@@ -593,7 +595,7 @@ git commit -m "feat: add local task control web ui"
 - Consumes: complete CLI package and embedded templates/static files
 - Produces: `dist/guarded-agent` Linux x86_64 executable and CI artifact
 
-- [ ] **Step 1: Write failing packaging metadata test**
+- [x] **Step 1: Write failing packaging metadata test**
 
 ```python
 def test_gitlab_has_required_unit_test_job() -> None:
@@ -602,23 +604,23 @@ def test_gitlab_has_required_unit_test_job() -> None:
     assert "make test" in " ".join(config["unit-test"]["script"])
 ```
 
-- [ ] **Step 2: Run test and verify RED**
+- [x] **Step 2: Run test and verify RED**
 
 Run: `pytest tests/test_packaging.py -q`
 
 Expected: `.gitlab-ci.yml` absent.
 
-- [ ] **Step 3: Implement reproducible build and CI**
+- [x] **Step 3: Implement reproducible build and CI**
 
 `make test` runs all offline tests; `make quality` runs Ruff and mypy; `make binary` invokes a checked-in PyInstaller spec that embeds templates/static. GitLab jobs are `unit-test` and `build-binary`; the latter uploads `dist/guarded-agent` and runs `version` plus `demo` before artifact publication.
 
-- [ ] **Step 4: Verify source CI contract and binary smoke tests**
+- [x] **Step 4: Verify source CI contract and binary smoke tests**
 
 Run: `pytest tests/test_packaging.py -q && make test && make quality && make binary && ./dist/guarded-agent version && ./dist/guarded-agent demo`
 
 Expected: every command exits 0; demo reports all three scenarios.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add guarded-agent.spec scripts/build_binary.sh .gitlab-ci.yml pyproject.toml Makefile tests/test_packaging.py
@@ -637,27 +639,27 @@ git commit -m "build: package linux binary in gitlab ci"
 - Consumes: verified commands, actual commits, agent review reports and known limitations
 - Produces: complete handoff documentation and truthful process evidence
 
-- [ ] **Step 1: Write factual project documentation**
+- [x] **Step 1: Write factual project documentation**
 
 README must include binary acquisition/build, executable permission, localhost WebUI, CLI examples, encrypted credential setup/status/update/clear, unsupported platform/signing, trusted-repository warning, no public URL, architecture, test command and third-party licenses. `REFLECTION.md` contains headings, word-count guidance, factual commit/test references and explicit markers for the student to write personal analysis; do not generate the personal reflection.
 
 Manual documentation acceptance: a reviewer reads README for the listed topics, confirms examples match the implemented CLI, and records the result in `AGENT_LOG.md`. This is deliberately manual; no README-heading source-text test is created.
 
-- [ ] **Step 2: Complete process evidence**
+- [x] **Step 2: Complete process evidence**
 
 Append chronological skill usage, prompts, red/green evidence, subagent output, commit hashes, human decisions and deviations to `AGENT_LOG.md`; update PLAN checkboxes with actual commit hashes; finish cold-start outcomes in `SPEC_PROCESS.md`. Never fabricate PR, CI, public registry or deployment evidence.
 
-- [ ] **Step 3: Request two-stage code review and fix findings**
+- [x] **Step 3: Request two-stage code review and fix findings**
 
 Use `superpowers:requesting-code-review`: first check SPEC compliance, then code quality/security. Resolve every Critical issue and record the review and fixes in `AGENT_LOG.md`.
 
-- [ ] **Step 4: Run fresh final verification**
+- [x] **Step 4: Run fresh final verification**
 
 Run: `make test && make quality && make binary && ./dist/guarded-agent version && ./dist/guarded-agent demo && git diff --check`
 
 Expected: all commands exit 0, all tests pass, all three demo scenarios pass, and no whitespace errors are reported.
 
-- [ ] **Step 5: Verify requirements line by line**
+- [x] **Step 5: Verify requirements line by line**
 
 Compare every SPEC §10 acceptance criterion and course deliverable against repository evidence. Report external-owner actions separately: GitLab remote/public visibility, PR workflow, final hosted CI pass, downloadable artifact retention, and the student's 1500–2500 Chinese-character reflection.
 

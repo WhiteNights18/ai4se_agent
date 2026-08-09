@@ -298,6 +298,11 @@ CredentialVault ─► OpenAICompatibleProvider（仅真实模型模式）
 - Pytest：支持确定性单元与集成测试。
 - PyInstaller：生成 Linux x86_64 单文件二进制。
 
+WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localhost
+轮询，没有使用 Open Design 设计系统或对应 skill。原因是用户明确选择最简单的
+本地控制台，界面只承担任务创建、时间线、diff 与审批，不建设通用组件库或品牌化
+前端；这是有意识的流程偏离，并在 `AGENT_LOG.md` 中披露。
+
 不使用 LangChain AgentExecutor、AutoGen、CrewAI、LlamaIndex Agent 或任何编码智能体 SDK 的 Agent runner。
 
 ## 10. 验收标准

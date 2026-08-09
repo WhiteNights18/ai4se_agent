@@ -4,7 +4,7 @@
 
 Guarded Agent 是一个治理优先、仅在本地运行的 Coding Agent Harness。LLM 只提出结构化动作；确定性代码负责工作区围栏、命令风险分类、一次性审批、工具执行、验证反馈、审计和停机判断。CLI 与本地 WebUI 共用同一个应用服务；默认 Mock provider 可离线演示，无需 API Key 或网络。
 
-目标运行时为 **Python 3.12**。项目不使用现成的 Agent 编排框架。
+目标且受支持的源码运行时为 **Python 3.12.x**。项目不使用现成的 Agent 编排框架。
 
 ## 安装
 
@@ -106,7 +106,7 @@ python -m guarded_agent run \
 make test
 ```
 
-本工作树当前解释器为 Python 3.14 时，ASGI 传输相关 Web 测试会跳过，因为该组合会挂起；目标 CI 应使用 Python 3.12 执行这些测试。GitLab CI 的 `unit-test` job 尚未实现，因此不能声称 CI 已通过。
+本工作树当前解释器为 Python 3.14 时，ASGI 传输相关 Web 测试会跳过，因为该组合会挂起；`.gitlab-ci.yml` 的 `unit-test` job 使用目标版本 Python 3.12 执行 `make test`。仓库内已有 CI 配置，但是否在托管 GitLab 上成功运行仍须以提交后的实际 pipeline 页面为准，本地验证不能替代 hosted CI pass 记录。
 
 ## 机制演示
 
@@ -160,8 +160,8 @@ Makefile               测试、lint 与类型检查入口
 - 不支持不可信/恶意项目，也不能替代容器、虚拟机或操作系统隔离。
 - 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
 - 本地构建和 GitLab CI 仅产出未签名的 Linux x86_64 单文件二进制；不存在托管下载链接。
-- Python 3.14 环境会跳过 ASGI Web 测试；请在 Python 3.12 CI 上执行完整该组测试。
+- Python 3.13 及以上不在声明的支持范围；本地 Python 3.14 仅用于辅助验证且会跳过 ASGI Web 测试，正式测试和构建请使用 Python 3.12。
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。第三方依赖及其许可证信息以各依赖的发布元数据为准；尚未提供独立的第三方许可证汇总文件。
+本项目采用 [MIT License](LICENSE)。直接运行、开发和构建依赖的许可证及核对范围见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；发布二进制前仍应对最终锁定的完整传递依赖做一次许可证清单复核。
