@@ -3,9 +3,65 @@
 from __future__ import annotations
 
 import re
+from collections import deque
+from collections.abc import Iterable
 
 _MARKER_CANDIDATES = ("[REDACTED]", "<redacted>", "[MASKED]", "***")
 _TRUNCATION_MARKER_CANDIDATES = ("[~]", "[TRUNCATED]", "<truncated>", "[CUT]")
+_MIN_FRAGMENT_LENGTH = 4
+
+
+class _BoundaryCensor:
+    """Remove terminal secret prefixes from a text suffix in amortized linear time."""
+
+    def __init__(self, patterns: Iterable[str]) -> None:
+        self._transitions: list[dict[str, int]] = [{}]
+        self._failures = [0]
+        self._depths = [0]
+        for pattern in patterns:
+            if len(pattern) < _MIN_FRAGMENT_LENGTH:
+                continue
+            state = 0
+            for character in pattern:
+                next_state = self._transitions[state].get(character)
+                if next_state is None:
+                    next_state = len(self._transitions)
+                    self._transitions[state][character] = next_state
+                    self._transitions.append({})
+                    self._failures.append(0)
+                    self._depths.append(self._depths[state] + 1)
+                state = next_state
+        self._build_failure_links()
+
+    def _build_failure_links(self) -> None:
+        pending = deque(self._transitions[0].values())
+        while pending:
+            state = pending.popleft()
+            for character, next_state in self._transitions[state].items():
+                fallback = self._failures[state]
+                while fallback and character not in self._transitions[fallback]:
+                    fallback = self._failures[fallback]
+                self._failures[next_state] = self._transitions[fallback].get(character, 0)
+                pending.append(next_state)
+
+    def censor_suffix(self, value: str) -> str:
+        """Remove secret-prefix suffixes to a fixed point without rescanning text."""
+        characters: list[str] = []
+        states = [0]
+        for character in value:
+            characters.append(character)
+            states.append(self._advance(states[-1], character))
+
+        while self._depths[states[-1]] >= _MIN_FRAGMENT_LENGTH:
+            match_length = self._depths[states[-1]]
+            del characters[-match_length:]
+            del states[-match_length:]
+        return "".join(characters)
+
+    def _advance(self, state: int, character: str) -> int:
+        while state and character not in self._transitions[state]:
+            state = self._failures[state]
+        return self._transitions[state].get(character, 0)
 
 
 class Redactor:
@@ -18,6 +74,8 @@ class Redactor:
             if self._secrets
             else None
         )
+        self._head_censor = _BoundaryCensor(self._secrets)
+        self._tail_censor = _BoundaryCensor(secret[::-1] for secret in self._secrets)
         self._marker = next(
             (candidate for candidate in _MARKER_CANDIDATES if all(secret not in candidate for secret in self._secrets)),
             "",
@@ -50,18 +108,9 @@ class Redactor:
         """
         redacted_head = self.redact(head)
         redacted_tail = self.redact(tail)
-        while True:
-            for secret in self._secrets:
-                head_overlap = _longest_prefix_at_end(secret, redacted_head)
-                tail_overlap = _longest_prefix_at_end(secret[::-1], redacted_tail[::-1])
-                if head_overlap >= 4:
-                    redacted_head = redacted_head[:-head_overlap]
-                if tail_overlap >= 4:
-                    redacted_tail = redacted_tail[tail_overlap:]
-                if head_overlap >= 4 or tail_overlap >= 4:
-                    break
-            else:
-                return redacted_head, redacted_tail
+        redacted_head = self._head_censor.censor_suffix(redacted_head)
+        redacted_tail = self._tail_censor.censor_suffix(redacted_tail[::-1])[::-1]
+        return redacted_head, redacted_tail
 
     def redact_bounded(
         self,
@@ -109,27 +158,3 @@ def _utf8_suffix(value: str, limit_bytes: int) -> str:
         return ""
     encoded = value.encode("utf-8")
     return encoded[-limit_bytes:].decode("utf-8", errors="ignore")
-
-
-def _longest_prefix_at_end(pattern: str, value: str) -> int:
-    """Return the longest pattern prefix that is also a value suffix in linear space."""
-    if not pattern or not value:
-        return 0
-    prefix_lengths = [0] * len(pattern)
-    matched = 0
-    for index in range(1, len(pattern)):
-        while matched and pattern[index] != pattern[matched]:
-            matched = prefix_lengths[matched - 1]
-        if pattern[index] == pattern[matched]:
-            matched += 1
-        prefix_lengths[index] = matched
-
-    matched = 0
-    for character in value:
-        while matched and character != pattern[matched]:
-            matched = prefix_lengths[matched - 1]
-        if character == pattern[matched]:
-            matched += 1
-        if matched == len(pattern):
-            matched = prefix_lengths[matched - 1]
-    return matched

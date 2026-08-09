@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from time import perf_counter
 
 from guarded_agent.redaction import Redactor
 
@@ -85,6 +86,20 @@ def test_truncated_redaction_restarts_after_later_secret_exposes_earlier_secret(
     redacted_head, _ = redactor.redact_truncated("ABCDWXYZ", "tail")
 
     assert redacted_head == ""
+
+
+def test_truncated_redaction_is_linear_for_maximum_repeated_boundary_fragments() -> None:
+    """Catch rescanning the whole retained segment after every fragment removal."""
+    redactor = Redactor(["ABCDEFGH"])
+    head = "ABCD" * (64 * 1024 // 4)
+
+    started = perf_counter()
+    redacted_head, redacted_tail = redactor.redact_truncated(head, "tail")
+    elapsed = perf_counter() - started
+
+    assert redacted_head == ""
+    assert redacted_tail == "tail"
+    assert elapsed < 0.5
 
 
 def test_truncation_marker_never_exposes_a_registered_marker_secret() -> None:
