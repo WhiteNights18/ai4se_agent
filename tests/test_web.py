@@ -106,7 +106,9 @@ def test_settings_page_never_accepts_master_password(configured_app) -> None:
 def test_web_cancel_memory_status_and_csrf_controls(configured_app) -> None:
     async def scenario() -> None:
         transport = httpx.ASGITransport(app=configured_app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=True
+        ) as client:
             await client.get("/")
             token = client.cookies["csrf_token"]
             created = await client.post(
@@ -166,7 +168,9 @@ def test_web_approve_route_resumes_the_exact_pending_action(tmp_path: Path, monk
 
         monkeypatch.setattr(ApplicationService, "resume", resume)
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=True
+        ) as client:
             await client.get("/")
             response = await client.post(
                 f"/approvals/{approval_id}/approve", data={"_csrf": client.cookies["csrf_token"]}
@@ -194,7 +198,9 @@ def test_web_reject_route_records_feedback_and_returns_to_running(tmp_path: Path
         assert service.run(task.id).value == "WAITING_APPROVAL"
         approval_id = service.pending_approval_id(task.id)
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=True
+        ) as client:
             await client.get("/")
             response = await client.post(
                 f"/approvals/{approval_id}/reject", data={"_csrf": client.cookies["csrf_token"]}
