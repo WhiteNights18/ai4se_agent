@@ -44,8 +44,10 @@
     </main>
 
     <aside class="context-panel" aria-label="当前上下文">
+      {% block context %}
       <section class="context-card"><p class="eyebrow">当前边界</p><h2>安全优先</h2><p>此界面仅连接到预先固定的本地工作区；凭据只能通过 CLI 管理。</p></section>
       <section class="context-card"><p class="eyebrow">监听地址</p><p class="context-card__value">127.0.0.1</p></section>
+      {% endblock %}
     </aside>
   </div>
   <script src="/static/app.js" defer></script>

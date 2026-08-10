@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -134,6 +135,140 @@ print("theme button contract passed");
     assert result.stdout == "theme button contract passed\n"
 
 
+def test_control_page_templates_render_workbench_information_and_preserve_form_contracts() -> None:
+    """Catch a regression that removes a control page's usable, safe workbench UI."""
+    task = SimpleNamespace(
+        id="task-12345678",
+        short_id="task-123",
+        goal="修复测试失败",
+        status=SimpleNamespace(value="WAITING_APPROVAL"),
+        status_label="等待审批",
+        created_at_display="2026年08月10日 09:30 UTC",
+        updated_at_display="2026年08月10日 09:31 UTC",
+    )
+    approval = SimpleNamespace(
+        id="approval-12345678",
+        short_id="approval-123",
+        summary="删除受控文件需要确认",
+        status=SimpleNamespace(value="PENDING"),
+        status_label="待审批",
+    )
+    memory = SimpleNamespace(
+        id="memory-12345678",
+        short_id="memory-123",
+        category="项目约定",
+        content="先写测试",
+        source_label="用户确认",
+        trust_label="已确认",
+        source=SimpleNamespace(value="user"),
+        trust=SimpleNamespace(value="confirmed"),
+        created_at_display="2026年08月10日 09:32 UTC",
+    )
+    common = {
+        "active_page": "tasks",
+        "page_title": "任务工作台",
+        "workspace_name": "演示工作区",
+        "csrf_token": "csrf-contract-token",
+    }
+    task_display = {
+        task.id: {
+            "short_id": task.short_id,
+            "created_at": task.created_at_display,
+            "created_at_raw": "2026-08-10T09:30:00+00:00",
+            "updated_at": task.updated_at_display,
+            "updated_at_raw": "2026-08-10T09:31:00+00:00",
+        }
+    }
+    approval_display = {approval.id: {"short_id": approval.short_id, "status_label": approval.status_label}}
+    memory_display = {
+        memory.id: {
+            "short_id": memory.short_id,
+            "source_label": memory.source_label,
+            "trust_label": memory.trust_label,
+            "created_at": memory.created_at_display,
+            "created_at_raw": "2026-08-10T09:32:00+00:00",
+        }
+    }
+
+    tasks_page = _templates.get_template("tasks.html").render(
+        **common,
+        tasks=[task],
+        task_display=task_display,
+        task_count=1,
+        active_task=task,
+        validators=[["pytest", "-q"]],
+    )
+    detail_page = _templates.get_template("task_detail.html").render(
+        **common,
+        task=task,
+        task_display=task_display[task.id],
+        timeline=[
+            {
+                "time": "2026-08-10T09:30:00+00:00",
+                "time_display": "2026年08月10日 09:30 UTC",
+                "event": "task_started",
+                "event_label": "任务已开始",
+                "payload": '{"reason":"demo"}',
+            }
+        ],
+    )
+    approvals_page = _templates.get_template("approvals.html").render(
+        **(common | {"active_page": "approvals"}),
+        approvals=[approval],
+        approval_display=approval_display,
+    )
+    memories_page = _templates.get_template("memories.html").render(
+        **(common | {"active_page": "memories"}), memories=[memory], memory_display=memory_display
+    )
+    settings_page = _templates.get_template("settings.html").render(
+        **(common | {"active_page": "settings"}),
+        workspace="演示工作区",
+        credential=SimpleNamespace(configured=True),
+    )
+
+    assert 'class="task-card"' in tasks_page
+    assert "任务数量：1" in tasks_page
+    assert "新建任务" in tasks_page
+    assert "等待审批" in tasks_page
+    assert "WAITING_APPROVAL" in tasks_page
+    assert '<form method="post" action="/tasks">' in tasks_page
+    assert 'name="goal"' in tasks_page
+    assert 'name="validation_id"' in tasks_page
+    assert 'value="validator-0"' in tasks_page
+    assert 'name="_csrf" value="csrf-contract-token"' in tasks_page
+
+    assert 'id="task-status"' in detail_page
+    assert 'data-status-url="/api/tasks/task-12345678/status"' in detail_page
+    assert "事件时间线" in detail_page
+    assert '<details class="event-payload">' in detail_page
+    assert "取消任务" in detail_page
+    assert 'action="/tasks/task-12345678/cancel"' in detail_page
+
+    assert 'class="approval-card approval-card--risk"' in approvals_page
+    assert "高风险操作需人工确认" in approvals_page
+    assert "拒绝操作" in approvals_page
+    assert "批准并继续" in approvals_page
+    assert 'action="/approvals/approval-12345678/reject"' in approvals_page
+    assert 'action="/approvals/approval-12345678/approve"' in approvals_page
+
+    assert 'class="memory-card"' in memories_page
+    assert "记忆条目" in memories_page
+    assert "新增记忆" in memories_page
+    assert "仅保存已确认事实" in memories_page
+    assert '<form method="post" action="/memories">' in memories_page
+    assert 'action="/memories/memory-12345678/delete"' in memories_page
+    assert "用户确认" in memories_page
+    assert "user" in memories_page
+    assert "已确认" in memories_page
+    assert "confirmed" in memories_page
+
+    assert 'class="setting-card"' in settings_page
+    assert "安全策略" in settings_page
+    assert "凭据只能通过 CLI 管理" in settings_page
+    assert "guarded-agent credentials" in settings_page
+    assert "<form" not in settings_page
+
+
 @pytest.fixture
 def configured_app(tmp_path: Path):
     """Create an in-process ASGI app with one startup-configured validator.
@@ -166,7 +301,7 @@ def test_web_can_create_mock_task_with_configured_validator(configured_app) -> N
                 follow_redirects=False,
             )
             assert response.status_code == 303
-            assert "Task timeline" in (await client.get(response.headers["location"])).text
+            assert "事件时间线" in (await client.get(response.headers["location"])).text
 
     asyncio.run(scenario())
 

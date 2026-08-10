@@ -1,4 +1,22 @@
-{% extends "base.html" %}{% block content %}
-<section id="task-status" data-status-url="/api/tasks/{{ task.id }}/status"><h2>Task timeline</h2><p>Goal: {{ task.goal }}</p><p>Status: <strong>{{ task.status.value }}</strong></p></section>
-{% if task.status.value in ['CREATED', 'RUNNING', 'WAITING_APPROVAL'] %}<form method="post" action="/tasks/{{ task.id }}/cancel"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button>Cancel task</button></form>{% endif %}
-<ol id="timeline">{% for event in timeline %}<li><time>{{ event.time }}</time> <strong>{{ event.event }}</strong><pre>{{ event.payload }}</pre></li>{% else %}<li>No events recorded yet.</li>{% endfor %}</ol>{% endblock %}
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block content %}
+<section id="task-status" class="task-detail-header" data-status-url="/api/tasks/{{ task.id }}/status" aria-live="polite">
+  <a class="back-link" href="/">返回任务列表</a>
+  <div class="task-detail-header__heading"><div><p class="eyebrow">任务 ID：<span title="{{ task.id }}">{{ task_display.short_id }}</span></p><h2>{{ task.goal }}</h2></div>{{ status_badge(task.status) }}</div>
+</section>
+<section aria-labelledby="timeline-heading"><div class="section-heading"><div><p class="eyebrow">可审阅记录</p><h2 id="timeline-heading">事件时间线</h2></div></div>
+  <ol id="timeline" class="timeline">
+  {% for event in timeline %}
+    <li class="timeline-event"><span class="timeline-event__node" aria-hidden="true"></span><div><div class="timeline-event__heading"><strong>{{ event.event_label }}</strong><time datetime="{{ event.time }}">{{ event.time_display }}</time></div><p class="raw-value">{{ event.event }}</p><details class="event-payload"><summary>查看结构化载荷</summary><pre>{{ event.payload }}</pre></details></div></li>
+  {% else %}
+    <li class="empty-state">尚未记录事件。任务开始后，受控操作会显示在这里。</li>
+  {% endfor %}
+  </ol>
+</section>
+{% endblock %}
+{% block context %}
+<section class="context-card"><p class="eyebrow">当前状态</p><p class="context-card__value">{{ task_display.status_label }}</p>{{ status_badge(task.status) }}</section>
+<section class="context-card"><p class="eyebrow">工作区</p><p>所有操作都限定在固定的本地工作区内，并受预先配置的策略约束。</p></section>
+{% if task.status.value in ['CREATED', 'RUNNING', 'WAITING_APPROVAL'] %}<section class="context-card cancel-panel"><p class="eyebrow">中止操作</p><h2>取消任务</h2><p>取消后无法从此页面恢复运行。</p><form method="post" action="/tasks/{{ task.id }}/cancel"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="button button--danger-secondary" type="submit">取消任务</button></form></section>{% endif %}
+{% endblock %}

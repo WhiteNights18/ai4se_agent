@@ -1,1 +1,13 @@
-{% extends "base.html" %}{% block content %}<h2>Approvals</h2><ul>{% for approval in approvals %}<li><strong>{{ approval.status.value }}</strong> {{ approval.summary }}<form method="post" action="/approvals/{{ approval.id }}/approve"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button>Approve</button></form><form method="post" action="/approvals/{{ approval.id }}/reject"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button>Reject</button></form></li>{% else %}<li>No pending approvals.</li>{% endfor %}</ul>{% endblock %}
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block content %}
+<section class="page-intro" aria-labelledby="approvals-heading"><div><p class="eyebrow">人工安全检查</p><h2 id="approvals-heading">审批</h2><p>只有明确批准的高风险动作才能继续执行。</p></div></section>
+<section class="approval-list" aria-label="待审批操作">
+{% for approval in approvals %}
+  {% set display = approval_display[approval.id] %}
+  <article class="approval-card approval-card--risk"><div class="approval-card__heading"><div><p class="eyebrow">审批 ID：<span title="{{ approval.id }}">{{ display.short_id }}</span></p><h3>高风险操作需人工确认</h3></div>{{ status_badge(approval.status) }}</div><p>{{ approval.summary }}</p><p class="raw-value">{{ approval.status.value }}</p><div class="approval-actions"><form method="post" action="/approvals/{{ approval.id }}/reject"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="button button--secondary" type="submit">拒绝操作</button></form><form method="post" action="/approvals/{{ approval.id }}/approve"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="button button--danger" type="submit">批准并继续</button></form></div></article>
+{% else %}
+  <section class="empty-state"><h3>没有待处理的审批</h3><p>当策略要求人工确认时，受控动作会在这里等待。</p></section>
+{% endfor %}
+</section>
+{% endblock %}

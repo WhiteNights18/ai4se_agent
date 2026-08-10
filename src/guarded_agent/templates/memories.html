@@ -1,1 +1,15 @@
-{% extends "base.html" %}{% block content %}<h2>Memories</h2><form method="post" action="/memories"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><label>Category <input name="category" required></label><label>Content <textarea name="content" required></textarea></label><button>Save memory</button></form><ul>{% for memory in memories %}<li><strong>{{ memory.category }}</strong>: {{ memory.content }}<form method="post" action="/memories/{{ memory.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button>Delete</button></form></li>{% else %}<li>No saved memories.</li>{% endfor %}</ul>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<section class="page-intro" aria-labelledby="memories-heading"><div><p class="eyebrow">可信上下文</p><h2 id="memories-heading">记忆</h2><p>保存可复用的项目事实，帮助后续受控任务保持一致。</p></div></section>
+<section class="memory-list" aria-label="记忆条目">
+{% for memory in memories %}
+  {% set display = memory_display[memory.id] %}
+  <article class="memory-card"><div class="memory-card__heading"><div><p class="eyebrow">{{ memory.category }}</p><h3>记忆条目</h3></div><span class="memory-id" title="{{ memory.id }}">{{ display.short_id }}</span></div><p>{{ memory.content }}</p><dl class="card-meta"><div><dt>来源</dt><dd>{{ display.source_label }} <span class="raw-value">{{ memory.source.value }}</span></dd></div><div><dt>可信度</dt><dd>{{ display.trust_label }} <span class="raw-value">{{ memory.trust.value }}</span></dd></div><div><dt>创建时间</dt><dd><time datetime="{{ display.created_at_raw }}">{{ display.created_at }}</time></dd></div></dl><form method="post" action="/memories/{{ memory.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="button button--danger-secondary" type="submit">删除记忆</button></form></article>
+{% else %}
+  <section class="empty-state"><h3>还没有已保存的记忆</h3><p>只保存已经确认的项目事实。</p></section>
+{% endfor %}
+</section>
+{% endblock %}
+{% block context %}
+<section class="context-card memory-create-panel"><p class="eyebrow">手动记录</p><h2>新增记忆</h2><p>仅保存已确认事实；内容会被限定在此固定工作区。</p><form method="post" action="/memories"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><label for="memory-category">类别</label><input id="memory-category" name="category" required maxlength="128"><label for="memory-content">内容</label><textarea id="memory-content" name="content" required maxlength="4096"></textarea><button class="button button--primary" type="submit">保存记忆</button></form></section>
+{% endblock %}
