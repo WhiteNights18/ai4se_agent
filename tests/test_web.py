@@ -75,6 +75,33 @@ def test_shell_initializes_a_supported_stored_theme_before_paint() -> None:
     assert '["system", "light", "dark"]' in template
 
 
+def test_live_workbench_contract_keeps_theme_and_status_updates_safe() -> None:
+    """Catch a theme or poller regression that can break the local workbench."""
+    root = Path(__file__).parents[1]
+    javascript = (root / "src/guarded_agent/static/app.js").read_text()
+    template = (root / "src/guarded_agent/templates/task_detail.html").read_text()
+    macros = (root / "src/guarded_agent/templates/_macros.html").read_text()
+    stylesheet = (root / "src/guarded_agent/static/app.css").read_text()
+
+    assert 'const themes = ["system", "light", "dark"]' in javascript
+    assert 'localStorage.setItem("guarded-agent-theme", nextTheme)' in javascript
+    assert 'window.matchMedia("(prefers-color-scheme: dark)")' in javascript
+    assert 'mediaQuery.addEventListener("change",' in javascript
+    assert 'if (document.documentElement.dataset.theme !== "system") return;' in javascript
+    assert 'credentials: "same-origin"' in javascript
+    assert 'new URL(node.dataset.statusUrl, window.location.origin)' in javascript
+    assert 'url.origin !== window.location.origin' in javascript
+    assert 'try {' in javascript and 'catch (_)' in javascript
+    assert '[data-status-value]' in javascript
+    assert '[data-timeline]' in javascript
+    assert 'data-status-value' in macros
+    assert 'data-timeline' in template
+    assert '@media (max-width: 720px)' in stylesheet
+    assert '@media (prefers-reduced-motion: reduce)' in stylesheet
+    assert ':focus-visible' in stylesheet
+    assert 'aria-label="主导航"' in (root / "src/guarded_agent/templates/base.html").read_text()
+
+
 def test_theme_button_cycles_modes_persists_the_selection_and_updates_aria_state(
     tmp_path: Path,
 ) -> None:

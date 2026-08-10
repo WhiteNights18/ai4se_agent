@@ -6,7 +6,7 @@
   <div class="task-detail-header__heading"><div><p class="eyebrow">任务 ID：<span title="{{ task.id }}">{{ task_display.short_id }}</span></p><h2>{{ task.goal }}</h2></div>{{ status_badge(task.status) }}</div>
 </section>
 <section aria-labelledby="timeline-heading"><div class="section-heading"><div><p class="eyebrow">可审阅记录</p><h2 id="timeline-heading">事件时间线</h2></div></div>
-  <ol id="timeline" class="timeline">
+  <ol id="timeline" class="timeline" data-timeline>
   {% for event in timeline %}
     <li class="timeline-event"><span class="timeline-event__node" aria-hidden="true"></span><div><div class="timeline-event__heading"><strong>{{ event.event_label }}</strong><time datetime="{{ event.time }}">{{ event.time_display }}</time></div><p class="raw-value">{{ event.event }}</p><details class="event-payload"><summary>查看结构化载荷</summary><pre>{{ event.payload }}</pre></details></div></li>
   {% else %}

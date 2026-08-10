@@ -23,6 +23,7 @@
     <aside class="sidebar" aria-label="工作台侧栏">
       <header class="brand"><span class="brand__mark">GA</span><span>受控 Agent</span></header>
       <p class="workspace-indicator"><span>固定工作区</span><strong title="{{ workspace_name }}">{{ workspace_name }}</strong></p>
+      <p class="mobile-nav-label">导航</p>
       <nav aria-label="主导航">
         <a href="/"{% if active_page == "tasks" %} aria-current="page"{% endif %}>{{ icon("tasks") }}<span>任务</span></a>
         <a href="/approvals"{% if active_page == "approvals" %} aria-current="page"{% endif %}>{{ icon("approvals") }}<span>审批</span></a>
@@ -37,7 +38,7 @@
         <div><p class="eyebrow">本地受控工作台</p><h1>{{ page_title }}</h1></div>
         <div class="workspace-tools">
           <span class="localhost-status">{{ icon("local") }}127.0.0.1</span>
-          <button class="theme-toggle" type="button" data-theme-toggle aria-label="切换主题" aria-pressed="false">{{ icon("theme") }}<span>主题</span></button>
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="切换主题" aria-pressed="false">{{ icon("theme") }}<span data-theme-toggle-label>主题：跟随系统</span></button>
         </div>
       </header>
       {% block content %}{% endblock %}
