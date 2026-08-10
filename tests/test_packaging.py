@@ -81,6 +81,7 @@ def test_github_runs_tests_and_publishes_smoke_tested_binary() -> None:
     config = _github_config()
     assert "pull_request" in config["on"]
     assert "push" in config["on"]
+    assert config["on"]["push"]["branches"] == ["main"]
 
     jobs = config["jobs"]
     assert isinstance(jobs, dict)

@@ -12,7 +12,7 @@
 
 ## 触发与权限
 
-workflow 在对 `main` 的 Pull Request 和向 `main`、`feature/**` 的 push 上触发。只需要读取仓库内容，不使用 secrets，不授予写权限。artifact 使用固定名称 `guarded-agent-linux-x86_64`。
+workflow 在对 `main` 的 Pull Request 和向 `main` 的 push 上触发。功能分支更新由 Pull Request 事件覆盖，避免同一次提交重复运行两套 job。workflow 只需要读取仓库内容，不使用 secrets，不授予写权限。artifact 使用固定名称 `guarded-agent-linux-x86_64`。
 
 ## 文档与验证
 

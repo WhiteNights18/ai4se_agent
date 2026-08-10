@@ -79,4 +79,5 @@
 - **最终两阶段审查：** 规约审查与代码质量/安全审查均无 Critical；据审查将 Python 声明收紧为 3.12.x，并记录 Open Design 取舍。冷启动不同 agent 类型、真实 PR 和远端 CI 等历史/平台证据不能事后伪造。
 - **托管平台更新（2026-08-10）：** 助教确认平台可任选，用户选择 GitHub。功能分支已推送并创建 PR #1；新增 GitHub Actions 作为实际 hosted CI，保留 GitLab 配置仅作兼容。
 - **首轮 Actions 反馈：** `build-binary` 通过；Python 3.12 的 `unit-test` 以 322 passed/3 failed 暴露 Web 测试未跟随表单成功后的 303 重定向。生产路由行为正确，修复为相关端到端客户端显式 `follow_redirects=True`，并重新触发 CI。
+- **第二轮 Actions 反馈：** 两个 `unit-test` 与两个 `build-binary` job 均通过；重复是 feature push 与 PR 同时触发所致。随后把 push 限定为 `main`，功能分支只由 PR 触发，以避免重复消耗。
 - **仍需学生/平台完成：** 确认最后一次 GitHub Actions workflow 为 pass；保留或下载 Linux x86_64 artifact；合并 PR；由学生本人完成 1500–2500 中文字符 `REFLECTION.md`。
