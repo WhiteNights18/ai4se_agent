@@ -1,6 +1,56 @@
+{% from "_macros.html" import icon %}
 <!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Guarded Agent</title><link rel="stylesheet" href="/static/app.css"></head>
-<body><header><h1>Guarded Agent — local control</h1><nav><a href="/">Tasks</a> <a href="/approvals">Approvals</a> <a href="/memories">Memories</a> <a href="/settings">Settings</a></nav></header>
-<main>{% block content %}{% endblock %}</main><script src="/static/app.js" defer></script></body>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ page_title }} · 受控 Agent</title>
+  <script>
+    (() => {
+      try {
+        const savedTheme = window.localStorage.getItem("guarded-agent-theme");
+        document.documentElement.dataset.theme = ["system", "light", "dark"].includes(savedTheme) ? savedTheme : "system";
+      } catch (_) {
+        document.documentElement.dataset.theme = "system";
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="工作台侧栏">
+      <header class="brand"><span class="brand__mark">GA</span><span>受控 Agent</span></header>
+      <p class="workspace-indicator"><span>固定工作区</span><strong title="{{ workspace_name }}">{{ workspace_name }}</strong></p>
+      <p class="mobile-nav-label">导航</p>
+      <nav aria-label="主导航">
+        <a href="/"{% if active_page == "tasks" %} aria-current="page"{% endif %}>{{ icon("tasks") }}<span>任务</span></a>
+        <a href="/approvals"{% if active_page == "approvals" %} aria-current="page"{% endif %}>{{ icon("approvals") }}<span>审批</span></a>
+        <a href="/memories"{% if active_page == "memories" %} aria-current="page"{% endif %}>{{ icon("memories") }}<span>记忆</span></a>
+        <a href="/settings"{% if active_page == "settings" %} aria-current="page"{% endif %}>{{ icon("settings") }}<span>设置</span></a>
+      </nav>
+      <p class="local-indicator">{{ icon("local") }}仅在本机运行</p>
+    </aside>
+
+    <main id="main-content" class="workspace-main">
+      <header class="workspace-header">
+        <div><p class="eyebrow">本地受控工作台</p><h1>{{ page_title }}</h1></div>
+        <div class="workspace-tools">
+          <span class="localhost-status">{{ icon("local") }}127.0.0.1</span>
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="切换主题" aria-pressed="false">{{ icon("theme") }}<span data-theme-toggle-label>主题：跟随系统</span></button>
+        </div>
+      </header>
+      {% block content %}{% endblock %}
+    </main>
+
+    <aside class="context-panel" aria-label="当前上下文">
+      {% block context %}
+      <section class="context-card"><p class="eyebrow">当前边界</p><h2>安全优先</h2><p>此界面仅连接到预先固定的本地工作区；凭据只能通过 CLI 管理。</p></section>
+      <section class="context-card"><p class="eyebrow">监听地址</p><p class="context-card__value">127.0.0.1</p></section>
+      {% endblock %}
+    </aside>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
 </html>

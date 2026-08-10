@@ -58,6 +58,12 @@
 - **验收结果：** README 已覆盖项目简介、源码安装、CLI/WebUI、二进制获取/本地构建、`chmod +x`、Linux x86_64/未签名、凭据 set/status/update/clear、架构、测试、安全边界、可信仓库警告、无公网 URL 和第三方许可证链接；示例子命令与当前 CLI 一致。
 - **文档产物：** `THIRD_PARTY_LICENSES.md` 只声称直接依赖；`REFLECTION.md` 仅提供事实索引与学生模板，不代写个人反思。
 
+## 2026-08-10：本地 WebUI 工作台主题与轮询（Task 3）
+
+- **RED→GREEN：** 先加入主题、同源轮询、时间线、响应式、reduced-motion、focus-visible 与移动导航标签的静态行为契约；当前审计解释器缺少 `pytest`，因此 `python -m pytest tests/test_web.py -q` 在导入前以 `No module named pytest` 终止。实现后以 Python 编译、SpiderMonkey 解析和独立静态契约审计检查源文件；完整 pytest/quality/binary gate 仍需在配置好的 Python 3.12 开发环境执行。
+- **实现边界：** 主题按 `system → light → dark → system` 循环，`localStorage` 不可用时继续在当前页面工作；系统配色变化仅在 system 模式下影响控件状态。任务刷新只接受与当前页面同源的 JSON URL，失败静默处理，并通过 DOM 文本节点重建发生变化的时间线，不插入 API HTML。
+- **截图证据：** 此工作树的可执行检查发现 `js140`，但没有 Chromium、Chrome、Playwright 或其他浏览器二进制；因此没有生成或伪造 `docs/screenshots/webui-light.png`、`webui-dark.png`。待有真实本地浏览器后，需补充 1440px 浅/深色及 390px 溢出检查截图。
+
 ## SPEC §10 最终逐项核对
 
 | # | 仓库证据与结论 |

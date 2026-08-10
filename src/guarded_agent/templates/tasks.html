@@ -1,3 +1,33 @@
-{% extends "base.html" %}{% block content %}
-<h2>Tasks</h2><form method="post" action="/tasks"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><label>Goal <input name="goal" required maxlength="4096"></label><label>Validator <select name="validation_id" required>{% for command in validators %}<option value="validator-{{ loop.index0 }}">{{ command | join(' ') }}</option>{% endfor %}</select></label><button>Create mock task</button></form>
-<ul>{% for task in tasks %}<li><a href="/tasks/{{ task.id }}">{{ task.goal }}</a> — <strong>{{ task.status.value }}</strong></li>{% else %}<li>No tasks.</li>{% endfor %}</ul>{% endblock %}
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block content %}
+<section class="page-intro" aria-labelledby="tasks-heading">
+  <div><p class="eyebrow">固定工作区</p><h2 id="tasks-heading">任务</h2><p>查看受控任务的状态、记录和下一步操作。</p></div>
+  <p class="page-count" aria-label="任务数量：{{ task_count }}">任务数量：{{ task_count }}</p>
+</section>
+<section class="task-list" aria-label="任务列表">
+  {% for task in tasks %}
+    {% set display = task_display[task.id] %}
+    <article class="task-card">
+      <a class="task-card__link" href="/tasks/{{ task.id }}">
+        <div class="task-card__heading"><h3>{{ task.goal }}</h3>{{ status_badge(task.status) }}</div>
+        <dl class="card-meta"><div><dt>任务 ID</dt><dd title="{{ task.id }}">{{ display.short_id }}</dd></div><div><dt>创建时间</dt><dd><time datetime="{{ display.created_at_raw }}">{{ display.created_at }}</time></dd></div><div><dt>最近更新</dt><dd><time datetime="{{ display.updated_at_raw }}">{{ display.updated_at }}</time></dd></div></dl>
+      </a>
+    </article>
+  {% else %}
+    <section class="empty-state"><h3>还没有任务</h3><p>从右侧创建一个受固定验证器约束的本地任务。</p></section>
+  {% endfor %}
+</section>
+{% endblock %}
+{% block context %}
+<section class="context-card task-create-panel">
+  <p class="eyebrow">受控创建</p><h2>新建任务</h2><p>一次只允许一个活动任务；验证器只能从已配置列表中选择。</p>
+  <form method="post" action="/tasks">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label for="task-goal">目标</label><textarea id="task-goal" name="goal" required maxlength="4096" placeholder="描述需要完成的工作"></textarea>
+    <label for="task-validator">验证器</label><select id="task-validator" name="validation_id" required>{% for command in validators %}<option value="validator-{{ loop.index0 }}">{{ command | join(' ') }}</option>{% endfor %}</select>
+    <button class="button button--primary" type="submit">创建模拟任务</button>
+  </form>
+</section>
+{% if active_task %}<section class="context-card"><p class="eyebrow">当前任务</p><p>{{ active_task.goal }}</p>{{ status_badge(active_task.status) }}</section>{% endif %}
+{% endblock %}

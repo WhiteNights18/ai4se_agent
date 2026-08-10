@@ -1,1 +1,11 @@
-{% extends "base.html" %}{% block content %}<h2>Settings</h2><p>Workspace: {{ workspace }}</p><p>Credential status: {% if credential.configured %}configured (locked){% else %}not configured{% endif %}</p><p>Credentials and hard safety rules can only be changed through the CLI.</p>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<section class="page-intro" aria-labelledby="settings-heading"><div><p class="eyebrow">只读配置</p><h2 id="settings-heading">设置</h2><p>这些信息用于确认本地工作台的安全边界，不能在网页中修改。</p></div></section>
+<section class="settings-grid" aria-label="安全设置">
+  <article class="setting-card"><p class="eyebrow">工作区</p><h3>{{ workspace }}</h3><p>已固定；网页不能切换到其他目录。</p></article>
+  <article class="setting-card"><p class="eyebrow">凭据状态</p><h3>{% if credential.configured %}已配置（已锁定）{% else %}未配置{% endif %}</h3><p>网页不会显示或接收凭据内容。</p></article>
+  <article class="setting-card"><p class="eyebrow">监听地址</p><h3><code>127.0.0.1</code></h3><p>只绑定本机，不能从网络访问。</p></article>
+  <article class="setting-card"><p class="eyebrow">安全策略</p><h3>固定工作区与预配置验证器</h3><p>任务、审批和验证器均由后端强制约束。</p></article>
+</section>
+<section class="cli-guidance"><h2>通过 CLI 管理凭据</h2><p>凭据只能通过 CLI 管理。以下命令不包含任何秘密：</p><code>guarded-agent credentials set --provider &lt;provider&gt;</code></section>
+{% endblock %}

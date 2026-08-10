@@ -18,15 +18,89 @@ from fastapi.templating import Jinja2Templates
 from guarded_agent.config import load_settings
 from guarded_agent.credentials import CredentialVault
 from guarded_agent.domain import TaskStatus
-from guarded_agent.memory import MemorySource, MemoryTrust
+from guarded_agent.memory import MemoryEntry, MemorySource, MemoryTrust
 from guarded_agent.providers.mock import ScriptedMockProvider
 from guarded_agent.redaction import Redactor
 from guarded_agent.service import ApplicationService
-from guarded_agent.storage import Database, Task
+from guarded_agent.storage import Approval, Database, Task
 
 _ACTIVE = {TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL}
 _PACKAGE = Path(__file__).parent
 _templates = Jinja2Templates(directory=str(_PACKAGE / "templates"))
+_PAGE_METADATA = {
+    "tasks.html": ("tasks", "任务工作台"),
+    "task_detail.html": ("tasks", "任务详情"),
+    "approvals.html": ("approvals", "审批中心"),
+    "memories.html": ("memories", "记忆库"),
+    "settings.html": ("settings", "设置"),
+}
+_STATUS_LABELS = {
+    "CREATED": "已创建",
+    "RUNNING": "执行中",
+    "WAITING_APPROVAL": "等待审批",
+    "COMPLETED": "已完成",
+    "FAILED": "失败",
+    "CANCELLED": "已取消",
+    "PENDING": "待审批",
+    "APPROVED": "已批准",
+    "REJECTED": "已拒绝",
+    "EXPIRED": "已过期",
+    "CONSUMED": "已执行",
+}
+_EVENT_LABELS = {
+    "task_created": "任务已创建",
+    "task_started": "任务已开始",
+    "task_cancelled": "任务已取消",
+    "approval_rejected": "审批已拒绝",
+    "approval_mismatch": "审批校验不匹配",
+}
+_MEMORY_SOURCE_LABELS = {
+    MemorySource.USER: "用户确认",
+    MemorySource.TASK_SUMMARY: "任务摘要",
+    MemorySource.MODEL: "模型生成",
+}
+_MEMORY_TRUST_LABELS = {
+    MemoryTrust.CONFIRMED: "已确认",
+    MemoryTrust.UNCONFIRMED: "未确认",
+}
+
+
+def _short_id(identifier: str) -> str:
+    """Provide a compact reference while retaining the full value in the rendered title."""
+    return identifier[:8]
+
+
+def _format_timestamp(value: datetime) -> str:
+    """Present a timezone-aware audit timestamp without changing its raw API value."""
+    return value.astimezone(UTC).strftime("%Y年%m月%d日 %H:%M UTC")
+
+
+def _task_display(task: Task) -> dict[str, str]:
+    return {
+        "short_id": _short_id(task.id),
+        "status_label": _STATUS_LABELS.get(task.status.value, "未知"),
+        "created_at": _format_timestamp(task.created_at),
+        "created_at_raw": task.created_at.isoformat(),
+        "updated_at": _format_timestamp(task.updated_at),
+        "updated_at_raw": task.updated_at.isoformat(),
+    }
+
+
+def _approval_display(approval: Approval) -> dict[str, str]:
+    return {
+        "short_id": _short_id(approval.id),
+        "status_label": _STATUS_LABELS.get(approval.status.value, "未知"),
+    }
+
+
+def _memory_display(memory: MemoryEntry) -> dict[str, str]:
+    return {
+        "short_id": _short_id(memory.id),
+        "source_label": _MEMORY_SOURCE_LABELS[memory.source],
+        "trust_label": _MEMORY_TRUST_LABELS[memory.trust],
+        "created_at": _format_timestamp(memory.created_at),
+        "created_at_raw": memory.created_at.isoformat(),
+    }
 
 
 def create_web_app(
@@ -63,7 +137,18 @@ def create_web_app(
         return response
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
-        return _templates.TemplateResponse(request, name, {"csrf_token": request.state.csrf_token, **context})
+        active_page, page_title = _PAGE_METADATA.get(name, ("", "受控 Agent"))
+        return _templates.TemplateResponse(
+            request,
+            name,
+            {
+                "csrf_token": request.state.csrf_token,
+                "active_page": active_page,
+                "page_title": page_title,
+                "workspace_name": fixed_workspace.name,
+                **context,
+            },
+        )
 
     def check_csrf(request: Request, token: str) -> None:
         expected = request.cookies.get("csrf_token")
@@ -84,7 +169,9 @@ def create_web_app(
         return [
             {
                 "time": event.created_at.isoformat(),
+                "time_display": _format_timestamp(event.created_at),
                 "event": event.event_type,
+                "event_label": _EVENT_LABELS.get(event.event_type, "受控事件"),
                 "payload": payload_redactor.redact(
                     json.dumps(event.redacted_payload, ensure_ascii=False)
                 ),
@@ -94,7 +181,17 @@ def create_web_app(
 
     @app.get("/", response_class=HTMLResponse)
     def tasks(request: Request) -> HTMLResponse:
-        return page(request, "tasks.html", tasks=database.tasks.list_for_workspace(workspace_id), validators=validators)
+        listed_tasks = database.tasks.list_for_workspace(workspace_id)
+        active_task = next((task for task in listed_tasks if task.status in _ACTIVE), None)
+        return page(
+            request,
+            "tasks.html",
+            tasks=listed_tasks,
+            task_display={task.id: _task_display(task) for task in listed_tasks},
+            task_count=len(listed_tasks),
+            active_task=active_task,
+            validators=validators,
+        )
 
     @app.post("/tasks")
     def create_task(
@@ -120,7 +217,13 @@ def create_web_app(
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
     def task_detail(request: Request, task_id: str) -> HTMLResponse:
         task = get_task(task_id)
-        return page(request, "task_detail.html", task=task, timeline=timeline(task.id))
+        return page(
+            request,
+            "task_detail.html",
+            task=task,
+            task_display=_task_display(task),
+            timeline=timeline(task.id),
+        )
 
     @app.get("/api/tasks/{task_id}/status")
     def task_status(task_id: str) -> JSONResponse:
@@ -144,7 +247,12 @@ def create_web_app(
                 except KeyError:
                     continue
                 pending.append(approval)
-        return page(request, "approvals.html", approvals=pending)
+        return page(
+            request,
+            "approvals.html",
+            approvals=pending,
+            approval_display={approval.id: _approval_display(approval) for approval in pending},
+        )
 
     @app.post("/approvals/{approval_id}/{decision}")
     def decide_approval(
@@ -170,7 +278,13 @@ def create_web_app(
 
     @app.get("/memories", response_class=HTMLResponse)
     def memories(request: Request) -> HTMLResponse:
-        return page(request, "memories.html", memories=database.memory.list_for_workspace(workspace_id))
+        entries = database.memory.list_for_workspace(workspace_id)
+        return page(
+            request,
+            "memories.html",
+            memories=entries,
+            memory_display={memory.id: _memory_display(memory) for memory in entries},
+        )
 
     @app.post("/memories")
     def add_memory(
