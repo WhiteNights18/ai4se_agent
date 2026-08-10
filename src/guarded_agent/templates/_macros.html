@@ -1,0 +1,19 @@
+{% macro icon(name) -%}
+<svg class="icon icon--{{ name }}" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  {% if name == "tasks" %}<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8M8 13h5"/>
+  {% elif name == "approvals" %}<path d="M12 3 20 7v5c0 5-3.4 7.8-8 9-4.6-1.2-8-4-8-9V7l8-4Z"/><path d="m9 12 2 2 4-4"/>
+  {% elif name == "memories" %}<path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v17.5H7.5A2.5 2.5 0 0 0 5 22Z"/><path d="M5 4.5v15"/>
+  {% elif name == "settings" %}<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.1 2.1-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56v.1h-3v-.1A1.7 1.7 0 0 0 10.7 18.6a1.7 1.7 0 0 0-1.88.34l-.06.06-2.1-2.1.06-.06A1.7 1.7 0 0 0 7.06 15 1.7 1.7 0 0 0 5.5 14H5.4v-3h.1A1.7 1.7 0 0 0 7.06 10a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.1-2.1.06.06A1.7 1.7 0 0 0 10.7 6.36 1.7 1.7 0 0 0 11.73 4.8v-.1h3v.1a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.1 2.1-.06.06A1.7 1.7 0 0 0 19.4 10c.64.26 1.06.88 1.06 1.57v.86c0 .69-.42 1.31-1.06 1.57Z"/>
+  {% elif name == "theme" %}<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+  {% elif name == "local" %}<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.2 2.5 3.3 5.5 3.3 9S14.2 18.5 12 21c-2.2-2.5-3.3-5.5-3.3-9S9.8 5.5 12 3Z"/>
+  {% else %}<circle cx="12" cy="12" r="8"/>{% endif %}
+</svg>
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+  {% set value = status.value if status.value is defined else status|string %}
+  {% set labels = {"CREATED": "已创建", "RUNNING": "执行中", "WAITING_APPROVAL": "等待审批", "SUCCEEDED": "已完成", "FAILED": "失败", "CANCELLED": "已取消"} %}
+  <span class="status-badge status-badge--{{ value|lower|replace('_', '-') }}" aria-label="状态：{{ labels.get(value, '未知') }}">
+    <span>{{ labels.get(value, "未知") }}</span><span class="status-badge__raw">{{ value }}</span>
+  </span>
+{%- endmacro %}

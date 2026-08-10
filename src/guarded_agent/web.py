@@ -27,6 +27,13 @@ from guarded_agent.storage import Database, Task
 _ACTIVE = {TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL}
 _PACKAGE = Path(__file__).parent
 _templates = Jinja2Templates(directory=str(_PACKAGE / "templates"))
+_PAGE_METADATA = {
+    "tasks.html": ("tasks", "任务工作台"),
+    "task_detail.html": ("tasks", "任务详情"),
+    "approvals.html": ("approvals", "审批中心"),
+    "memories.html": ("memories", "记忆库"),
+    "settings.html": ("settings", "设置"),
+}
 
 
 def create_web_app(
@@ -63,7 +70,18 @@ def create_web_app(
         return response
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
-        return _templates.TemplateResponse(request, name, {"csrf_token": request.state.csrf_token, **context})
+        active_page, page_title = _PAGE_METADATA.get(name, ("", "受控 Agent"))
+        return _templates.TemplateResponse(
+            request,
+            name,
+            {
+                "csrf_token": request.state.csrf_token,
+                "active_page": active_page,
+                "page_title": page_title,
+                "workspace_name": fixed_workspace.name,
+                **context,
+            },
+        )
 
     def check_csrf(request: Request, token: str) -> None:
         expected = request.cookies.get("csrf_token")
