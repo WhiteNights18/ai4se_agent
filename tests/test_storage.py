@@ -54,6 +54,18 @@ def test_approval_can_be_consumed_only_once(db: Database) -> None:
     ) is False
 
 
+def test_open_creates_missing_database_parent_directory(tmp_path: Path) -> None:
+    """A fresh workspace should not require manual creation of .guarded-agent."""
+    database_path = tmp_path / ".guarded-agent" / "state.sqlite3"
+
+    database = Database.open(database_path)
+    try:
+        assert database_path.is_file()
+        assert database_path.parent.is_dir()
+    finally:
+        database.close()
+
+
 def test_approval_rejects_wrong_digest_and_expired_approval(db: Database) -> None:
     """Catch authorization that ignores a changed action or an expired approval."""
     now = datetime.now(UTC)
