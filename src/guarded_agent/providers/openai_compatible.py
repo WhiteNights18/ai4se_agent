@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from guarded_agent.domain import ToolAction, parse_tool_action
 
 from .base import ContextMessage, ProviderResponseError
+from .openai_messages import translate_messages
 
 __all__ = ["OpenAICompatibleProvider", "ProviderResponseError"]
 
@@ -71,7 +72,7 @@ class OpenAICompatibleProvider:
             return client.post(
                 self._url,
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": self._model, "messages": messages},
+                json={"model": self._model, "messages": translate_messages(messages)},
             )
 
 
@@ -81,7 +82,36 @@ def _parse_response(response: httpx.Response) -> ToolAction:
         content = payload["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             raise TypeError("content must be a JSON string")
-        action = json.loads(content)
+        action = _extract_json(content)
         return parse_tool_action(action)
     except (IndexError, KeyError, TypeError, ValueError, ValidationError) as error:
         raise ProviderResponseError("provider response did not contain a valid tool action") from error
+
+
+def _extract_json(content: str) -> object:
+    """Parse the first complete JSON object in model content, ignoring prose."""
+    start = content.find("{")
+    if start == -1:
+        raise ValueError("content contains no JSON object")
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(content)):
+        char = content[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(content[start : index + 1])
+    raise ValueError("content contains no complete JSON object")
