@@ -59,6 +59,7 @@ def test_shared_design_system_has_theme_responsive_and_focus_contracts() -> None
     stylesheet = (Path(__file__).parents[1] / "src/guarded_agent/static/app.css").read_text()
 
     assert ".status-badge" in stylesheet
+    assert ".status-badge--completed" in stylesheet
     assert "@media (max-width: 720px)" in stylesheet
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet
     assert ":focus-visible" in stylesheet
@@ -239,6 +240,11 @@ def test_control_page_templates_render_workbench_information_and_preserve_form_c
 
     assert 'id="task-status"' in detail_page
     assert 'data-status-url="/api/tasks/task-12345678/status"' in detail_page
+    assert re.search(
+        r'id="task-status".*?<strong[^>]*class="status-badge__raw"[^>]*>WAITING_APPROVAL</strong>',
+        detail_page,
+        re.DOTALL,
+    )
     assert "事件时间线" in detail_page
     assert '<details class="event-payload">' in detail_page
     assert "取消任务" in detail_page

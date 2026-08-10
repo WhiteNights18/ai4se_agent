@@ -106,7 +106,7 @@ button:hover { border-color: var(--accent); }
 .workspace-main li { overflow-wrap: anywhere; }
 .workspace-main li form { box-shadow: none; }
 .status-badge { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .5rem; border-radius: 999px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent-strong); font-size: .78rem; font-weight: 700; }
-.status-badge--succeeded { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.status-badge--succeeded, .status-badge--completed { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
 .status-badge--failed, .status-badge--cancelled { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .status-badge--waiting-approval { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 .status-badge__raw { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .72rem; font-weight: 500; }
