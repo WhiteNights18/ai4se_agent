@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block content %}
+<section id="task-status" data-status-url="/api/tasks/{{ task.id }}/status"><h2>Task timeline</h2><p>Goal: {{ task.goal }}</p><p>Status: <strong>{{ task.status.value }}</strong></p></section>
+{% if task.status.value in ['CREATED', 'RUNNING', 'WAITING_APPROVAL'] %}<form method="post" action="/tasks/{{ task.id }}/cancel"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button>Cancel task</button></form>{% endif %}
+<ol id="timeline">{% for event in timeline %}<li><time>{{ event.time }}</time> <strong>{{ event.event }}</strong><pre>{{ event.payload }}</pre></li>{% else %}<li>No events recorded yet.</li>{% endfor %}</ol>{% endblock %}

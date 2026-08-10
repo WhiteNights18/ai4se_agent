@@ -1,0 +1,3 @@
+{% extends "base.html" %}{% block content %}
+<h2>Tasks</h2><form method="post" action="/tasks"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><label>Goal <input name="goal" required maxlength="4096"></label><label>Validator <select name="validation_id" required>{% for command in validators %}<option value="validator-{{ loop.index0 }}">{{ command | join(' ') }}</option>{% endfor %}</select></label><button>Create mock task</button></form>
+<ul>{% for task in tasks %}<li><a href="/tasks/{{ task.id }}">{{ task.goal }}</a> — <strong>{{ task.status.value }}</strong></li>{% else %}<li>No tasks.</li>{% endfor %}</ul>{% endblock %}
