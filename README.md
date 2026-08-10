@@ -25,6 +25,13 @@ python -m guarded_agent credential --help
 python -m guarded_agent memory --help
 ```
 
+> **注意（venv 可见性）**：`guarded_agent` 只安装在本仓库的 `.venv` 中，不会装进系统 Python。下面所有 `python -m guarded_agent` 都要求在存在该 venv 的 shell 中执行（通常先 `. .venv/bin/activate`）。一旦 `cd` 到其他目录——例如凭据管理一节要求进入的私有目录——当前 shell 会丢失激活状态，直接运行 `python -m guarded_agent` 会落到系统解释器并报 `No module named guarded_agent`。此时改用 venv 解释器的绝对路径即可（把 `<repo>` 换成仓库实际路径），或在当前终端重新激活：
+>
+> ```bash
+> <repo>/.venv/bin/python -m guarded_agent --help
+> source <repo>/.venv/bin/activate
+> ```
+
 ## 运行
 
 先在受信任项目的根目录创建允许的验收命令；命令必须以 argv 数组写入配置，运行时只能从这里选择：
@@ -88,6 +95,8 @@ python -m guarded_agent credential set --provider openai-compatible
 python -m guarded_agent credential status --unlock
 python -m guarded_agent credential clear
 ```
+
+> **提示**：上述命令先 `cd` 离开了仓库根目录，所以其中的 `python` 不会再指向项目 venv。请先按上一节说明激活 venv 或使用 venv 绝对路径调用，否则会报 `No module named guarded_agent`。
 
 `status` 只报告是否已配置；加 `--unlock` 后也只报告 provider 与 endpoint，**绝不回显 API Key 或主密码**。遗忘主密码无法恢复原凭据，只能 `clear` 后重新 `set`。真实 provider 运行时会在终端解锁 vault：
 
