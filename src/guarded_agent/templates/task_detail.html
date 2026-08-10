@@ -16,7 +16,7 @@
 </section>
 {% endblock %}
 {% block context %}
-<section class="context-card"><p class="eyebrow">当前状态</p><p class="context-card__value">{{ task_display.status_label }}</p>{{ status_badge(task.status) }}</section>
+<section class="context-card"><p class="eyebrow">当前状态</p><p class="context-card__value" data-status-label>{{ task_display.status_label }}</p>{{ status_badge(task.status) }}</section>
 <section class="context-card"><p class="eyebrow">工作区</p><p>所有操作都限定在固定的本地工作区内，并受预先配置的策略约束。</p></section>
 {% if task.status.value in ['CREATED', 'RUNNING', 'WAITING_APPROVAL'] %}<section class="context-card cancel-panel"><p class="eyebrow">中止操作</p><h2>取消任务</h2><p>取消后无法从此页面恢复运行。</p><form method="post" action="/tasks/{{ task.id }}/cancel"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="button button--danger-secondary" type="submit">取消任务</button></form></section>{% endif %}
 {% endblock %}

@@ -113,7 +113,14 @@ document.addEventListener("DOMContentLoaded", () => {
       for (const value of document.querySelectorAll("[data-status-value]")) {
         value.textContent = payload.status;
         const badge = value.closest(".status-badge");
-        if (badge) badge.setAttribute("aria-label", `状态：${statusLabels[payload.status] || "未知"}`);
+        if (badge) {
+          const statusClasses = Array.from(badge.classList).filter((name) =>
+            name.startsWith("status-badge--")
+          );
+          badge.classList.remove(...statusClasses);
+          badge.classList.add(`status-badge--${payload.status.toLowerCase().replaceAll("_", "-")}`);
+          badge.setAttribute("aria-label", `状态：${statusLabels[payload.status] || "未知"}`);
+        }
       }
       for (const label of document.querySelectorAll("[data-status-label]")) {
         label.textContent = statusLabels[payload.status] || "未知";

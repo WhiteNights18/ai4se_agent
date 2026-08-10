@@ -93,8 +93,11 @@ def test_live_workbench_contract_keeps_theme_and_status_updates_safe() -> None:
     assert 'url.origin !== window.location.origin' in javascript
     assert 'try {' in javascript and 'catch (_)' in javascript
     assert '[data-status-value]' in javascript
+    assert 'badge.classList.remove(...statusClasses)' in javascript
+    assert 'badge.classList.add(`status-badge--${payload.status.toLowerCase().replaceAll("_", "-")}`)' in javascript
     assert '[data-timeline]' in javascript
     assert 'data-status-value' in macros
+    assert '<p class="context-card__value" data-status-label>' in template
     assert 'data-timeline' in template
     assert '@media (max-width: 720px)' in stylesheet
     assert '@media (prefers-reduced-motion: reduce)' in stylesheet
