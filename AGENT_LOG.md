@@ -81,4 +81,5 @@
 - **首轮 Actions 反馈：** `build-binary` 通过；Python 3.12 的 `unit-test` 以 322 passed/3 failed 暴露 Web 测试未跟随表单成功后的 303 重定向。生产路由行为正确，修复为相关端到端客户端显式 `follow_redirects=True`，并重新触发 CI。
 - **第二轮 Actions 反馈：** 两个 `unit-test` 与两个 `build-binary` job 均通过；重复是 feature push 与 PR 同时触发所致。随后把 push 限定为 `main`，功能分支只由 PR 触发，以避免重复消耗。
 - **优化后 hosted 证据：** GitHub Actions run `31352497991` 仅运行一套 job；`unit-test`（Python 3.12）与 `build-binary` 均为 pass，后者上传 `guarded-agent-linux-x86_64` artifact。
+- **课程终审修订：** 独立逐条审计指出仅监听 `main` push 不满足“每次 push”；workflow 改为所有分支 push，并只在 PR 创建/重开/ready 时额外触发，兼顾合规和避免普通更新重复运行。终审前最新成功 HEAD run 为 `31352586972`。
 - **仍需学生/平台完成：** 确认最后一次 GitHub Actions workflow 为 pass；保留或下载 Linux x86_64 artifact；合并 PR；由学生本人完成 1500–2500 中文字符 `REFLECTION.md`。
