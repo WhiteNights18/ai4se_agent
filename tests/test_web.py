@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +71,67 @@ def test_shell_initializes_a_supported_stored_theme_before_paint() -> None:
 
     assert 'localStorage.getItem("guarded-agent-theme")' in template
     assert '["system", "light", "dark"]' in template
+
+
+def test_theme_button_cycles_modes_persists_the_selection_and_updates_aria_state(
+    tmp_path: Path,
+) -> None:
+    """Catch a toggle that skips a mode, fails to persist, or misreports its state."""
+    javascript_shell = shutil.which("js140")
+    if javascript_shell is None:
+        pytest.skip("SpiderMonkey js140 is unavailable for the browser-script contract")
+
+    script_path = Path(__file__).parents[1] / "src/guarded_agent/static/app.js"
+    harness = tmp_path / "theme_button_contract.js"
+    harness.write_text(
+        f'''\
+const documentListeners = {{}};
+const buttonListeners = {{}};
+const attributes = {{}};
+const persisted = [];
+const themeButton = {{
+  addEventListener(type, handler) {{ buttonListeners[type] = handler; }},
+  setAttribute(name, value) {{ attributes[name] = String(value); }},
+}};
+globalThis.document = {{
+  documentElement: {{ dataset: {{ theme: "system" }} }},
+  addEventListener(type, handler) {{ documentListeners[type] = handler; }},
+  querySelector(selector) {{
+    if (selector === "[data-theme-toggle]") return themeButton;
+    if (selector === "[data-status-url]") return null;
+    throw new Error("unexpected selector: " + selector);
+  }},
+}};
+globalThis.localStorage = {{
+  setItem(key, value) {{ persisted.push([key, value]); }},
+}};
+globalThis.window = {{ setInterval() {{ throw new Error("unexpected poll"); }} }};
+load({script_path.as_posix()!r});
+documentListeners.DOMContentLoaded();
+function expect(actual, expected, message) {{
+  if (actual !== expected) throw new Error(message + ": expected " + expected + ", got " + actual);
+}}
+expect(attributes["aria-pressed"], "false", "system mode must not be pressed");
+for (const [mode, pressed] of [["light", "true"], ["dark", "true"], ["system", "false"]]) {{
+  buttonListeners.click();
+  expect(document.documentElement.dataset.theme, mode, "theme after click");
+  expect(attributes["aria-pressed"], pressed, "pressed state after click");
+}}
+expect(persisted.length, 3, "persisted selection count");
+for (const [index, mode] of ["light", "dark", "system"].entries()) {{
+  expect(persisted[index][0], "guarded-agent-theme", "storage key");
+  expect(persisted[index][1], mode, "persisted mode");
+}}
+print("theme button contract passed");
+'''
+    )
+
+    result = subprocess.run(
+        [javascript_shell, str(harness)], text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "theme button contract passed\n"
 
 
 @pytest.fixture
