@@ -48,7 +48,7 @@ Run: `.venv/bin/pytest tests/test_packaging.py -q && make test && make quality &
 
 Expected: all commands return zero; the demo prints all three safety scenarios.
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add .github/workflows/ci.yml tests/test_packaging.py README.md SPEC.md PLAN.md SPEC_PROCESS.md AGENT_LOG.md docs/superpowers/plans/2026-08-10-github-actions.md
