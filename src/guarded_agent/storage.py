@@ -76,6 +76,15 @@ class AgentTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationMessage:
+    id: str
+    task_id: str
+    role: str
+    content: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PendingAction:
     approval_id: str
     task_id: str
@@ -138,6 +147,7 @@ class Database:
         self._connection = connection
         self._lock = RLock()
         self.tasks = TaskStore(self)
+        self.conversations = ConversationStore(self)
         self.audit = AuditStore(self)
         self.approvals = ApprovalStore(self)
         from guarded_agent.memory import MemoryStore
@@ -264,6 +274,13 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             approval_id TEXT PRIMARY KEY REFERENCES approvals(id),
             task_id TEXT NOT NULL REFERENCES tasks(id),
             action_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
+            content TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
         """
@@ -480,6 +497,37 @@ class TaskStore:
             connection.execute("DELETE FROM pending_actions WHERE approval_id = ?", (approval_id,))
 
 
+class ConversationStore:
+    """Persist bounded user/agent transcript entries for one governed task."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def add(self, task_id: str, role: str, content: str) -> ConversationMessage:
+        if role not in {"user", "agent"}:
+            raise ValueError("conversation role must be user or agent")
+        if not content or len(content) > 4096:
+            raise ValueError("conversation content must be between 1 and 4096 characters")
+        message = ConversationMessage(str(uuid4()), task_id, role, content, _now())
+        try:
+            with self._database.operation() as connection:
+                connection.execute(
+                    "INSERT INTO conversation_messages VALUES (?, ?, ?, ?, ?)",
+                    (message.id, message.task_id, message.role, message.content, _timestamp(message.created_at)),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError("task does not exist") from error
+        return message
+
+    def list_for_task(self, task_id: str) -> list[ConversationMessage]:
+        with self._database.operation() as connection:
+            rows = connection.execute(
+                "SELECT * FROM conversation_messages WHERE task_id = ? ORDER BY created_at, id",
+                (task_id,),
+            ).fetchall()
+        return [_conversation_message_from_row(row) for row in rows]
+
+
 class AuditStore:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -687,6 +735,19 @@ def _turn_from_row(row: sqlite3.Row) -> AgentTurn:
         cast(int, row["turn_no"]),
         _json_object(cast(str, row["action_json"])),
         _json_object(cast(str, row["feedback_json"])),
+        created_at,
+    )
+
+
+def _conversation_message_from_row(row: sqlite3.Row) -> ConversationMessage:
+    created_at = _parse_timestamp(cast(str, row["created_at"]))
+    if created_at is None:
+        raise ValueError("conversation timestamp is malformed")
+    return ConversationMessage(
+        cast(str, row["id"]),
+        cast(str, row["task_id"]),
+        cast(str, row["role"]),
+        cast(str, row["content"]),
         created_at,
     )
 

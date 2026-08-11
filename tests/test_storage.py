@@ -66,6 +66,41 @@ def test_open_creates_missing_database_parent_directory(tmp_path: Path) -> None:
         database.close()
 
 
+def test_conversation_messages_are_ordered_and_persisted(tmp_path: Path) -> None:
+    database_path = tmp_path / "nested" / "state.sqlite3"
+    database = Database.open(database_path)
+    workspace = database.tasks.create_workspace(str(tmp_path), "project")
+    task = database.tasks.create_task(
+        task_id="conversation-task",
+        workspace_id=workspace.id,
+        goal="chat",
+        acceptance_commands=[],
+        limits={},
+    )
+
+    first = database.conversations.add(task.id, "user", "hello")
+    second = database.conversations.add(task.id, "agent", "hi there")
+    assert [message.id for message in database.conversations.list_for_task(task.id)] == [
+        first.id,
+        second.id,
+    ]
+    database.close()
+
+    reopened = Database.open(database_path)
+    assert [message.content for message in reopened.conversations.list_for_task(task.id)] == [
+        "hello",
+        "hi there",
+    ]
+    reopened.close()
+
+
+def test_conversation_messages_reject_invalid_role_and_oversized_content(db: Database) -> None:
+    with pytest.raises(ValueError, match="role"):
+        db.conversations.add("t1", "system", "not allowed")
+    with pytest.raises(ValueError, match="content"):
+        db.conversations.add("t1", "user", "x" * 4097)
+
+
 def test_approval_rejects_wrong_digest_and_expired_approval(db: Database) -> None:
     """Catch authorization that ignores a changed action or an expired approval."""
     now = datetime.now(UTC)
