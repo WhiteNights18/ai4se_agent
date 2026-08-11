@@ -70,6 +70,8 @@ python -m guarded_agent version
 
 WebUI 只允许绑定 `127.0.0.1`，访问地址为 `http://127.0.0.1:8000`。它固定在启动时给定的一个工作区；不接受主密码、任意 shell 输入或公网地址。页面提供任务、审批、记忆和设置组成的本地工作台；主题按钮按“跟随系统 → 浅色 → 深色”循环，并仅把该选择保存到浏览器本地存储。任务详情只轮询同源的本地状态 JSON，动态状态与时间线用文本节点更新，不接收或插入服务器返回的 HTML。
 
+使用 `--provider openai-compatible` 启动 WebUI 时，服务启动阶段只解锁一次本地 vault；之后同一进程中的“持续对话”面板可以连续发送消息。每条消息仍会经过同一个 AgentLoop、治理策略、审批和审计流程。主密码不会保存，服务重启后需要再次输入；WebUI 仍只监听 `127.0.0.1`。
+
 本次工作树的审计环境没有 Chromium、Playwright 或其他可用浏览器二进制，因此未生成 `docs/screenshots/webui-light.png` 或 `docs/screenshots/webui-dark.png`，也没有以占位图替代。需要截图时，可在具备浏览器的本地环境启动上述 WebUI 后，分别在 1440px 宽度的浅色和深色主题下捕获真实任务工作台画面。
 
 默认 Mock provider 不需要 API Key。`run` 的默认 Mock 脚本只用于安全的无模型路径；要让实际任务完成，应提供受支持的真实 provider，或运行固定的 `demo` 演示。

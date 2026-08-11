@@ -64,6 +64,12 @@
 - **实现边界：** 主题按 `system → light → dark → system` 循环，`localStorage` 不可用时继续在当前页面工作；系统配色变化仅在 system 模式下影响控件状态。任务刷新只接受与当前页面同源的 JSON URL，失败静默处理，并通过 DOM 文本节点重建发生变化的时间线，不插入 API HTML。
 - **截图证据：** 此工作树的可执行检查发现 `js140`，但没有 Chromium、Chrome、Playwright 或其他浏览器二进制；因此没有生成或伪造 `docs/screenshots/webui-light.png`、`webui-dark.png`。待有真实本地浏览器后，需补充 1440px 浅/深色及 390px 溢出检查截图。
 
+## 2026-08-11：本地 WebUI 持续对话 MVP
+
+- **设计边界：** 保持 127.0.0.1-only、一次一个活动任务、现有治理/审批/审计和 CLI 凭据边界；WebUI 启动时解锁真实 provider 一次，服务重启后重新解锁。
+- **实现内容：** 新增有序、限长的 conversation_messages 存储；聊天 JSON 端点；每条消息推进一次现有 AgentLoop；聊天文本使用 `textContent` 渲染，CSRF 和同源请求保持开启。
+- **验证要求：** 不把主密码、API Key 或模型原始响应写入消息表、HTML 或日志；默认 Mock WebUI 行为继续可用。
+
 ## SPEC §10 最终逐项核对
 
 | # | 仓库证据与结论 |

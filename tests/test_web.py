@@ -267,6 +267,10 @@ def test_control_page_templates_render_workbench_information_and_preserve_form_c
     assert 'name="validation_id"' in tasks_page
     assert 'value="validator-0"' in tasks_page
     assert 'name="_csrf" value="csrf-contract-token"' in tasks_page
+    assert 'data-chat-panel' in tasks_page
+    assert 'data-chat-transcript' in tasks_page
+    assert 'data-chat-form' in tasks_page
+    assert '/api/chat/messages' in (Path(__file__).parents[1] / "src/guarded_agent/static/app.js").read_text()
 
     assert 'id="task-status"' in detail_page
     assert 'data-status-url="/api/tasks/task-12345678/status"' in detail_page

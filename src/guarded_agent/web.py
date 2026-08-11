@@ -19,6 +19,7 @@ from guarded_agent.config import load_settings
 from guarded_agent.credentials import CredentialVault
 from guarded_agent.domain import TaskStatus
 from guarded_agent.memory import MemoryEntry, MemorySource, MemoryTrust
+from guarded_agent.providers.base import LLMProvider
 from guarded_agent.providers.mock import ScriptedMockProvider
 from guarded_agent.redaction import Redactor
 from guarded_agent.service import ApplicationService
@@ -104,7 +105,11 @@ def _memory_display(memory: MemoryEntry) -> dict[str, str]:
 
 
 def create_web_app(
-    workspace: Path, *, host: str = "127.0.0.1", redactor: Redactor | None = None
+    workspace: Path,
+    *,
+    host: str = "127.0.0.1",
+    redactor: Redactor | None = None,
+    provider: LLMProvider | None = None,
 ) -> FastAPI:
     """Build an app whose workspace and acceptance-command allowlist never change."""
     if host != "127.0.0.1":
@@ -118,6 +123,9 @@ def create_web_app(
     payload_redactor = redactor or Redactor([])
     service = ApplicationService(
         database, configured_validation_commands=validators, redactor=payload_redactor
+    )
+    conversation_provider = provider or ScriptedMockProvider(
+        {"tool": "complete", "arguments": {"summary": "mock conversation complete"}}
     )
     registered = database.tasks.get_workspace(str(fixed_workspace))
     if registered is None:
@@ -163,6 +171,24 @@ def create_web_app(
         if task.workspace_id != workspace_id:
             raise HTTPException(status_code=404, detail="task not found")
         return task
+
+    def conversation_payload() -> dict[str, Any]:
+        tasks = database.tasks.list_for_workspace(workspace_id)
+        task = next((item for item in tasks if item.status in _ACTIVE), None)
+        if task is None:
+            return {"task_id": None, "status": None, "messages": []}
+        return {
+            "task_id": task.id,
+            "status": task.status.value,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                    "created_at": message.created_at.isoformat(),
+                }
+                for message in database.conversations.list_for_task(task.id)
+            ],
+        }
 
     def timeline(task_id: str) -> list[dict[str, str]]:
         events = database.audit.list_for_task(task_id)
@@ -211,7 +237,7 @@ def create_web_app(
         with create_lock:
             if any(task.status in _ACTIVE for task in database.tasks.list_for_workspace(workspace_id)):
                 raise HTTPException(status_code=409, detail="only one task may be active")
-            task = service.create(fixed_workspace, goal, [selected], ScriptedMockProvider())
+            task = service.create(fixed_workspace, goal, [selected], conversation_provider)
         return RedirectResponse(f"/tasks/{task.id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -229,6 +255,38 @@ def create_web_app(
     def task_status(task_id: str) -> JSONResponse:
         task = get_task(task_id)
         return JSONResponse({"id": task.id, "status": task.status.value, "timeline": timeline(task.id)})
+
+    @app.get("/api/chat/messages")
+    def chat_messages() -> JSONResponse:
+        return JSONResponse(conversation_payload())
+
+    @app.post("/api/chat/messages")
+    async def chat_message(request: Request) -> JSONResponse:
+        check_csrf(request, request.headers.get("x-csrf-token", ""))
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError) as error:
+            raise HTTPException(status_code=422, detail="invalid JSON body") from error
+        message = body.get("message") if isinstance(body, dict) else None
+        if not isinstance(message, str) or not message.strip() or len(message) > 4096:
+            raise HTTPException(status_code=422, detail="message must be 1-4096 characters")
+        with create_lock:
+            tasks = database.tasks.list_for_workspace(workspace_id)
+            task = next((item for item in tasks if item.status in _ACTIVE), None)
+            if task is None:
+                if not validators:
+                    raise HTTPException(status_code=422, detail="no validation commands configured")
+                task = service.create(
+                    fixed_workspace, message.strip(), [validators[0]], conversation_provider
+                )
+            if task.status is TaskStatus.WAITING_APPROVAL:
+                return JSONResponse(conversation_payload(), status_code=409)
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+                task = service.create(
+                    fixed_workspace, message.strip(), [validators[0]], conversation_provider
+                )
+            service.step(task.id, message.strip())
+        return JSONResponse(conversation_payload())
 
     @app.post("/tasks/{task_id}/cancel")
     def cancel_task(request: Request, task_id: str, csrf: Annotated[str, Form(alias="_csrf")]) -> RedirectResponse:

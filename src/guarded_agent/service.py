@@ -77,6 +77,22 @@ class ApplicationService:
         finally:
             loop.tools.close()
 
+    def step(self, task_id: str, user_message: str | None = None) -> TaskStatus:
+        """Advance one governed model/tool turn for an interactive conversation."""
+        if user_message is not None:
+            self.database.conversations.add(task_id, "user", user_message)
+        loop = self._loop(task_id)
+        try:
+            result = loop.step()
+            turns = self.database.tasks.list_turns(task_id, limit=1)
+            if turns:
+                feedback = turns[-1].feedback_json.get("message")
+                if isinstance(feedback, str) and feedback:
+                    self.database.conversations.add(task_id, "agent", feedback)
+            return result
+        finally:
+            loop.tools.close()
+
     def resume(self, task_id: str, approval_id: str) -> TaskStatus:
         loop = self._loop(task_id)
         try:

@@ -6,7 +6,7 @@ from pydantic import JsonValue
 
 from guarded_agent.memory import MemoryStore
 from guarded_agent.providers.base import ContextMessage
-from guarded_agent.storage import AgentTurn, Task
+from guarded_agent.storage import AgentTurn, ConversationMessage, Task
 
 
 class ContextBuilder:
@@ -15,7 +15,12 @@ class ContextBuilder:
     def __init__(self, memory: MemoryStore) -> None:
         self._memory = memory
 
-    def build(self, task: Task, turns: list[AgentTurn]) -> list[ContextMessage]:
+    def build(
+        self,
+        task: Task,
+        turns: list[AgentTurn],
+        conversation: list[ConversationMessage] | None = None,
+    ) -> list[ContextMessage]:
         memories = self._memory.search(task.workspace_id, task.goal, limit=10)
         messages: list[ContextMessage] = [
             {
@@ -32,6 +37,13 @@ class ContextBuilder:
                         {"category": memory.category, "content": memory.content}
                         for memory in memories[:10]
                     ],
+                }
+            )
+        for message in (conversation or [])[-12:]:
+            messages.append(
+                {
+                    "role": "user" if message.role == "user" else "assistant",
+                    "content": message.content,
                 }
             )
         for turn in turns[-8:]:
