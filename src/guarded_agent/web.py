@@ -176,6 +176,11 @@ def create_web_app(
         tasks = database.tasks.list_for_workspace(workspace_id)
         task = next((item for item in tasks if item.status in _ACTIVE), None)
         if task is None:
+            task = next(
+                (item for item in tasks if database.conversations.list_for_task(item.id)),
+                None,
+            )
+        if task is None:
             return {"task_id": None, "status": None, "messages": []}
         return {
             "task_id": task.id,

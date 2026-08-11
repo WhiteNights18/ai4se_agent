@@ -366,6 +366,33 @@ def test_web_rejects_arbitrary_validation_command(configured_app) -> None:
 
 
 @requires_asgi_transport
+def test_web_chat_persists_message_and_advances_governed_task(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "guarded-agent.toml").write_text('[validation]\ncommands = [["true"]]\n')
+        app = create_web_app(
+            tmp_path,
+            provider=ScriptedMockProvider(
+                {"tool": "complete", "arguments": {"summary": "done"}}
+            ),
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/")
+            response = await client.post(
+                "/api/chat/messages",
+                headers={"X-CSRF-Token": client.cookies["csrf_token"]},
+                json={"message": "完成一次安全检查"},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["status"] == "COMPLETED"
+            assert [item["role"] for item in payload["messages"]] == ["user", "agent"]
+            assert payload["messages"][0]["content"] == "完成一次安全检查"
+
+    asyncio.run(scenario())
+
+
+@requires_asgi_transport
 def test_web_rejects_signed_or_malformed_validator_ids(configured_app) -> None:
     async def scenario() -> None:
         transport = httpx.ASGITransport(app=configured_app)
