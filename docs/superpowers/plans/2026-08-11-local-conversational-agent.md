@@ -28,11 +28,11 @@
 - Produce `ConversationMessage` data object and `ConversationStore.add/list_for_task` methods.
 - Store role, task id, bounded content, and UTC timestamp; reject unknown roles and oversized content.
 
-- [ ] Add failing tests for message ordering, persistence after reopen, and role/content validation.
-- [ ] Run focused storage tests and observe the expected failures.
-- [ ] Add the schema and repository with parameterized SQL and bounded values.
-- [ ] Run focused and full tests.
-- [ ] Commit `feat: persist conversational messages`.
+- [x] Add failing tests for message ordering, persistence after reopen, and role/content validation.
+- [x] Run focused storage tests and observe the expected failures.
+- [x] Add the schema and repository with parameterized SQL and bounded values.
+- [x] Run focused and full tests.
+- [x] Commit `feat: persist conversational messages`.
 
 ### Task 2: Provider-backed WebUI service flow
 
@@ -47,12 +47,12 @@
 - Add a CSRF-protected `POST /api/chat/messages` and read-only `GET /api/chat/messages`.
 - A message advances the current task through the existing governed service and returns status, latest feedback, and safe transcript data.
 
-- [ ] Add failing endpoint tests for CSRF, empty/oversized messages, workspace isolation, and provider-backed completion.
-- [ ] Implement startup provider injection and a single active task/session guard.
-- [ ] Persist the user message before the governed step and append only safe feedback summaries.
-- [ ] Preserve the existing task creation and approval routes.
-- [ ] Run web tests and full tests.
-- [ ] Commit `feat: expose governed chat session endpoints`.
+- [x] Add failing endpoint tests for CSRF, empty/oversized messages, workspace isolation, and provider-backed completion.
+- [x] Implement startup provider injection and a single active task/session guard.
+- [x] Persist the user message before the governed step and append only safe feedback summaries.
+- [x] Preserve the existing task creation and approval routes.
+- [x] Run web tests and full tests.
+- [x] Commit `feat: expose governed chat session endpoints`.
 
 ### Task 3: Workbench conversation UI and documentation
 
@@ -69,17 +69,16 @@
 - Add a transcript panel, composer, busy/error states, and safe JSON rendering.
 - Reuse theme, responsive, focus-visible, and reduced-motion contracts.
 
-- [ ] Add failing source/render contracts for transcript, composer, endpoint, and text-only updates.
-- [ ] Implement the compact Chinese conversation panel and same-origin fetch flow.
-- [ ] Keep approval and task detail links visible when status is `WAITING_APPROVAL`.
-- [ ] Update local-only usage and credential lifecycle documentation.
-- [ ] Run full tests, quality, binary build, version, demo, and diff-check.
-- [ ] Commit `feat: add local conversational workbench`.
+- [x] Add failing source/render contracts for transcript, composer, endpoint, and text-only updates.
+- [x] Implement the compact Chinese conversation panel and same-origin fetch flow.
+- [x] Keep approval and task detail links visible when status is `WAITING_APPROVAL`.
+- [x] Update local-only usage and credential lifecycle documentation.
+- [x] Run full tests, quality, binary build, version, demo, and diff-check.
+- [x] Commit `feat: add local conversational workbench`.
 
 ### Task 4: Review, verify, and deliver
 
-- [ ] Review the branch against the design and quality/security gates.
-- [ ] Fix all Critical and Important findings through a fresh fix pass.
-- [ ] Push `feature/conversational-agent` and open a PR to `main`.
+- [x] Review the branch against the design and quality/security gates.
+- [x] Fix all Critical and Important findings through a fresh fix pass.
+- [x] Push `feature/conversational-agent` and open a PR to `main`.
 - [ ] Confirm GitHub CI status and report any browser-evidence limitation without fabricating screenshots.
-
