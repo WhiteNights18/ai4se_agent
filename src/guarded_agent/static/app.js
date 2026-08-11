@@ -51,6 +51,72 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const renderChat = (payload) => {
+    const transcript = document.querySelector("[data-chat-transcript]");
+    const status = document.querySelector("[data-chat-status]");
+    if (!transcript || !payload || !Array.isArray(payload.messages)) return;
+    transcript.replaceChildren();
+    if (!payload.messages.length) {
+      const empty = document.createElement("li");
+      empty.className = "empty-state";
+      empty.textContent = "发送第一条消息，开始一个受治理的本地任务。";
+      transcript.append(empty);
+    }
+    for (const message of payload.messages) {
+      if (!message || typeof message !== "object") continue;
+      const item = document.createElement("li");
+      item.className = `conversation-message conversation-message--${message.role === "agent" ? "agent" : "user"}`;
+      item.textContent = String(message.content || "");
+      transcript.append(item);
+    }
+    if (status) status.textContent = statusLabels[payload.status] || "未开始";
+  };
+
+  let chatPanel = null;
+  try {
+    chatPanel = document.querySelector("[data-chat-panel]");
+  } catch (_) {
+    // Minimal script harnesses may not provide the optional chat surface.
+  }
+  if (chatPanel) {
+    const chatForm = chatPanel.querySelector("[data-chat-form]");
+    const chatError = chatPanel.querySelector("[data-chat-error]");
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || "";
+    const loadChat = async () => {
+      try {
+        const response = await fetch("/api/chat/messages", { credentials: "same-origin" });
+        if (response.ok) renderChat(await response.json());
+      } catch (_) {
+        if (chatError) chatError.textContent = "无法读取对话状态";
+      }
+    };
+    loadChat();
+    chatForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = chatForm.querySelector("textarea");
+      const button = chatForm.querySelector("button");
+      if (!input || !input.value.trim()) return;
+      if (button) button.disabled = true;
+      if (chatError) chatError.textContent = "";
+      try {
+        const response = await fetch("/api/chat/messages", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+          body: JSON.stringify({ message: input.value.trim() }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "消息发送失败");
+        input.value = "";
+        renderChat(payload);
+      } catch (error) {
+        if (chatError) chatError.textContent = error instanceof Error ? error.message : "消息发送失败";
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
+  }
+
   const node = document.querySelector("[data-status-url]");
   if (!node) return;
 

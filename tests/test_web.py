@@ -267,6 +267,10 @@ def test_control_page_templates_render_workbench_information_and_preserve_form_c
     assert 'name="validation_id"' in tasks_page
     assert 'value="validator-0"' in tasks_page
     assert 'name="_csrf" value="csrf-contract-token"' in tasks_page
+    assert 'data-chat-panel' in tasks_page
+    assert 'data-chat-transcript' in tasks_page
+    assert 'data-chat-form' in tasks_page
+    assert '/api/chat/messages' in (Path(__file__).parents[1] / "src/guarded_agent/static/app.js").read_text()
 
     assert 'id="task-status"' in detail_page
     assert 'data-status-url="/api/tasks/task-12345678/status"' in detail_page
@@ -357,6 +361,33 @@ def test_web_rejects_arbitrary_validation_command(configured_app) -> None:
                 },
             )
             assert response.status_code == 422
+
+    asyncio.run(scenario())
+
+
+@requires_asgi_transport
+def test_web_chat_persists_message_and_advances_governed_task(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "guarded-agent.toml").write_text('[validation]\ncommands = [["true"]]\n')
+        app = create_web_app(
+            tmp_path,
+            provider=ScriptedMockProvider(
+                {"tool": "complete", "arguments": {"summary": "done"}}
+            ),
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/")
+            response = await client.post(
+                "/api/chat/messages",
+                headers={"X-CSRF-Token": client.cookies["csrf_token"]},
+                json={"message": "完成一次安全检查"},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["status"] == "COMPLETED"
+            assert [item["role"] for item in payload["messages"]] == ["user", "agent"]
+            assert payload["messages"][0]["content"] == "完成一次安全检查"
 
     asyncio.run(scenario())
 

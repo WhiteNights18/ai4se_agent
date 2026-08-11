@@ -120,22 +120,33 @@ def web(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     provider: Annotated[str, typer.Option()] = "mock",
     vault: Annotated[Path | None, typer.Option()] = None,
+    model: Annotated[str, typer.Option()] = "deepseek-chat",
 ) -> None:
     """Start the local-only Web UI for one fixed workspace."""
     try:
         if host != "127.0.0.1":
             raise ValueError("WebUI may only bind to 127.0.0.1")
         redactor = Redactor([])
+        selected_provider: LLMProvider | None = None
         if provider == "openai-compatible":
             credential = _vault(vault).get(typer.prompt("Vault password", hide_input=True))
             redactor = Redactor([credential.api_key])
+            selected_provider = OpenAICompatibleProvider(
+                endpoint=credential.endpoint,
+                api_key=credential.api_key,
+                model=model,
+            )
         elif provider != "mock":
             raise ValueError("provider must be 'mock' or 'openai-compatible'")
         import uvicorn
 
         from guarded_agent.web import create_web_app
 
-        uvicorn.run(create_web_app(workspace, host=host, redactor=redactor), host=host, port=port)
+        uvicorn.run(
+            create_web_app(workspace, host=host, redactor=redactor, provider=selected_provider),
+            host=host,
+            port=port,
+        )
     except (ConfigError, OSError, ValueError) as error:
         _fail(str(error))
 

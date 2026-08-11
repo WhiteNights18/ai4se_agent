@@ -42,6 +42,7 @@ LLM 可以提出代码修改和命令执行方案，但仅靠提示词无法保�
 5. 作为审阅者，我希望在 WebUI 中查看轮次、工具调用、验证结果和审计事件，以便重建任务执行过程。
 6. 作为离线评测者，我希望用 Mock LLM 运行完整主循环和机制演示，以便无 API Key、无网络也能复现实验结果。
 7. 作为真实模型用户，我希望 API Key 经主密码加密后保存且日志不泄露明文，以便降低凭据进入仓库或审计记录的风险。
+8. 作为本地 Agent 用户，我希望在同一个 WebUI 进程中连续发送多条消息，而不必为每条消息重新输入 vault 密码，以便自然地推进一个受治理任务。
 8. 作为项目维护者，我希望保存经过确认的项目约定并按需检索，以便相关知识进入上下文而非加载全部历史。
 
 这些故事可独立实现和验证；每个故事有明确价值，范围足以在单一任务中交付，并通过下文验收标准测试。
@@ -173,7 +174,7 @@ Task 1 定义严格 `Action` 外壳：它只含 `tool: ToolName` 和 `arguments:
 
 ### 4.8 WebUI
 
-WebUI 仅监听 `127.0.0.1`，使用服务端 HTML 和少量原生 JavaScript，通过轮询展示任务状态。页面覆盖任务创建、执行时间线、工具输出和 diff、审批、取消、记忆管理及凭据状态。WebUI 不接收主密码，不允许浏览服务器任意目录，不允许修改硬安全规则，不提供任意 shell 输入。
+WebUI 仅监听 `127.0.0.1`，使用服务端 HTML 和少量原生 JavaScript，通过轮询展示任务状态，并提供 CSRF 保护的同源聊天 JSON 接口。默认使用 Mock provider；显式选择 `openai-compatible` 时，服务启动阶段解锁一次 vault，聊天面板的每条消息推进一次现有 AgentLoop。页面覆盖任务创建、持续对话、执行时间线、工具输出和 diff、审批、取消、记忆管理及凭据状态。WebUI 不接收主密码，不允许浏览服务器任意目录，不允许修改硬安全规则，不提供任意 shell 输入。
 
 ### 4.9 凭据管理
 
@@ -230,7 +231,8 @@ AgentLoop ───────► LLMProvider
    ├─────────────► ToolRegistry ─────► Workspace / subprocess
    ├─────────────► FeedbackEngine
    ├─────────────► MemoryStore
-   └─────────────► TaskStore / AuditStore / SQLite
+   ├─────────────► TaskStore / ConversationStore / AuditStore / SQLite
+   └─────────────► same-origin chat endpoints / transcript UI
 
 CredentialVault ─► OpenAICompatibleProvider（仅真实模型模式）
 ```
@@ -261,6 +263,7 @@ CredentialVault ─► OpenAICompatibleProvider（仅真实模型模式）
 | Approval | id, task_id, action_digest, policy_version, summary, status, expires_at, approved_at, consumed_at | `PENDING → APPROVED | REJECTED | EXPIRED`；仅原子 `APPROVED → CONSUMED` 一次 |
 | MemoryEntry | id, workspace_id, category, content, source, trust, keywords | 只存可信来源 |
 | AuditEvent | id, task_id?, event_type, redacted_payload, previous_digest, created_at | 追加写入 |
+| ConversationMessage | id, task_id, role (`user`/`agent`), bounded content, created_at | 属于一个 Task；按时间排序；不保存主密码、API Key 或原始模型响应 |
 | ProjectConfig | workspace_id, config_digest, parsed_values | 不含凭据 |
 
 ## 8. 凭据与分发设计
@@ -271,7 +274,7 @@ CredentialVault ─► OpenAICompatibleProvider（仅真实模型模式）
 - 查看：仅显示 provider、endpoint 和“已配置”，不回显 Key。
 - 更新：成功解锁或明确覆盖后生成新的盐和密文。
 - 清除：删除凭据文件并记录不含秘密的审计事件。
-- 使用：真实 provider 启动时终端解锁，明文不写日志、不传浏览器、不传工具子进程。
+- 使用：CLI `run` 每次进程启动时解锁；真实 provider WebUI 在服务启动时解锁一次，明文只保留在服务进程内，不写日志、不传浏览器、不传工具子进程；服务重启后重新解锁。
 
 ### 8.2 分发
 
@@ -298,9 +301,9 @@ CredentialVault ─► OpenAICompatibleProvider（仅真实模型模式）
 - Pytest：支持确定性单元与集成测试。
 - PyInstaller：生成 Linux x86_64 单文件二进制。
 
-WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localhost
+WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript、同源 JSON 聊天接口和 localhost
 轮询，没有使用 Open Design 设计系统或对应 skill。原因是用户明确选择最简单的
-本地控制台，界面只承担任务创建、时间线、diff 与审批，不建设通用组件库或品牌化
+本地控制台，界面只承担任务创建、持续对话、时间线、diff 与审批，不建设通用组件库或品牌化
 前端；这是有意识的流程偏离，并在 `AGENT_LOG.md` 中披露。
 
 不使用 LangChain AgentExecutor、AutoGen、CrewAI、LlamaIndex Agent 或任何编码智能体 SDK 的 Agent runner。
@@ -319,6 +322,8 @@ WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localho
 10. 本地 WebUI 能创建 Mock 任务、查看时间线、查看 diff、审批/拒绝及取消任务。
 11. `guarded-agent demo` 离线复现治理、反馈修正和防审批篡改三个场景。
 12. PyInstaller 产物在 Linux x86_64 上成功执行 `version` 与 `demo`。
+13. 真实 provider WebUI 启动时只提示一次 vault 密码；连续消息能够持久化并推进一个受治理任务。
+14. 聊天端点拒绝无效 CSRF、空/超长消息和跨工作区任务，并且 transcript 使用文本渲染而不插入模型 HTML。
 
 ## 11. 测试策略
 
@@ -338,10 +343,12 @@ WebUI 采用最小的 Jinja2 服务端渲染、原生 CSS/JavaScript 和 localho
 | PyInstaller 隐藏依赖遗漏 | CI 构建后运行 `version` 和 `demo` 冒烟测试 |
 | 主密码遗忘 | 不提供恢复；清除凭据后重新配置 |
 | LLM 输出不稳定 | 严格动作模式、错误反馈和连续失败上限 |
+| 持续对话状态增长 | 只保存限长消息，provider 上下文只带最近 12 条对话和最近 8 个 AgentTurn |
+| WebUI 进程退出 | 不持久化主密码；重启后重新解锁 vault，任务状态仍保留在 SQLite |
 | 输出污染模型上下文 | 分类、脱敏、截断，只提供相关摘要 |
 | 公网 WebUI 条款未满足 | 用户选择本地最小实现；在交付文档中透明记录评分风险 |
 | REFLECTION 学术归属 | 只创建由学生本人填写的结构和事实索引，不代写个人反思正文 |
 
 ## 13. 交付物范围
 
-交付 `SPEC.md`、`PLAN.md`、`SPEC_PROCESS.md`、`AGENT_LOG.md`、学生填写的 `REFLECTION.md`、README、完整源码、Mock LLM 测试、机制演示、构建脚本、PyInstaller 配置、GitHub Actions workflow 和兼容的 `.gitlab-ci.yml`。GitHub 是实际托管平台；最终 CI 通过记录、artifact 保留和学生个人反思仍需仓库所有者确认。
+交付 `SPEC.md`、`PLAN.md`、`SPEC_PROCESS.md`、`AGENT_LOG.md`、学生填写的 `REFLECTION.md`、README、完整源码、Mock LLM 测试、机制演示、构建脚本、PyInstaller 配置、GitHub Actions workflow 和兼容的 `.gitlab-ci.yml`；持续对话扩展的设计与计划另存于 `docs/superpowers/specs/2026-08-11-local-conversational-agent.md` 和 `docs/superpowers/plans/2026-08-11-local-conversational-agent.md`。GitHub 是实际托管平台；最终 CI 通过记录、artifact 保留和学生个人反思仍需仓库所有者确认。

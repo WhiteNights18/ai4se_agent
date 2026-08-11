@@ -83,7 +83,16 @@ class AgentLoop:
 
         turn_number = len(turns) + 1
         try:
-            raw_action = cast(object, self.provider.next_action(self.context.build(task, turns[-8:])))
+            raw_action = cast(
+                object,
+                self.provider.next_action(
+                    self.context.build(
+                        task,
+                        turns[-8:],
+                        self.database.conversations.list_for_task(task.id),
+                    )
+                ),
+            )
             action = _strict_action(raw_action)
         except (ProviderResponseError, ValidationError, TypeError, ValueError) as error:
             return self._record_feedback(

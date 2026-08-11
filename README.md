@@ -57,6 +57,11 @@ python -m guarded_agent run \
 python -m guarded_agent web \
   --workspace /absolute/path/to/trusted-project
 
+# DeepSeek 本地持续对话（启动时输入一次 vault 密码）
+python -m guarded_agent web \
+  --workspace /absolute/path/to/trusted-project \
+  --provider openai-compatible --model deepseek-chat
+
 # 记忆管理
 python -m guarded_agent memory add \
   --workspace /absolute/path/to/trusted-project \
@@ -69,6 +74,8 @@ python -m guarded_agent version
 ```
 
 WebUI 只允许绑定 `127.0.0.1`，访问地址为 `http://127.0.0.1:8000`。它固定在启动时给定的一个工作区；不接受主密码、任意 shell 输入或公网地址。页面提供任务、审批、记忆和设置组成的本地工作台；主题按钮按“跟随系统 → 浅色 → 深色”循环，并仅把该选择保存到浏览器本地存储。任务详情只轮询同源的本地状态 JSON，动态状态与时间线用文本节点更新，不接收或插入服务器返回的 HTML。
+
+使用 `--provider openai-compatible` 启动 WebUI 时，服务启动阶段只解锁一次本地 vault；之后同一进程中的“持续对话”面板可以连续发送消息。每条消息仍会经过同一个 AgentLoop、治理策略、审批和审计流程。主密码不会保存，服务重启后需要再次输入；WebUI 仍只监听 `127.0.0.1`。
 
 本次工作树的审计环境没有 Chromium、Playwright 或其他可用浏览器二进制，因此未生成 `docs/screenshots/webui-light.png` 或 `docs/screenshots/webui-dark.png`，也没有以占位图替代。需要截图时，可在具备浏览器的本地环境启动上述 WebUI 后，分别在 1440px 宽度的浅色和深色主题下捕获真实任务工作台画面。
 
@@ -156,6 +163,10 @@ tests/                 离线单元与集成测试
 docs/superpowers/      设计、计划与过程证据
 SPEC.md                产品与系统规约
 PLAN.md                实施计划与交付状态
+docs/superpowers/specs/2026-08-11-local-conversational-agent.md
+                       持续对话设计
+docs/superpowers/plans/2026-08-11-local-conversational-agent.md
+                       持续对话实施计划
 Makefile               测试、lint 与类型检查入口
 ```
 
@@ -172,7 +183,7 @@ Makefile               测试、lint 与类型检查入口
 - 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
 - 本地构建与 GitHub Actions artifact 仅产出未签名的 Linux x86_64 单文件二进制；不发布长期稳定的 Release 下载链接。
 - Python 3.13 及以上不在声明的支持范围；本地 Python 3.14 仅用于辅助验证且会跳过 ASGI Web 测试，正式测试和构建请使用 Python 3.12。
-- WebUI 中的任务固定使用 Mock provider（只读控制台），不会消耗真实 API Key；真实模型任务请通过 CLI `guarded-agent run --provider openai-compatible` 发起。
+- WebUI 默认使用 Mock provider；显式使用 `--provider openai-compatible` 时，启动阶段解锁一次 vault，持续对话消息由真实 provider 驱动，并仍经过现有治理、审批和审计流程。
 
 ## 许可证
 

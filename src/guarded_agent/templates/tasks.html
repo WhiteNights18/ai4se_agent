@@ -18,6 +18,15 @@
     <section class="empty-state"><h3>还没有任务</h3><p>从右侧创建一个受固定验证器约束的本地任务。</p></section>
   {% endfor %}
 </section>
+<section class="conversation-panel" aria-labelledby="conversation-heading" data-chat-panel>
+  <div class="section-heading"><div><p class="eyebrow">持续对话</p><h2 id="conversation-heading">Agent 对话</h2></div><span data-chat-status class="raw-value">未开始</span></div>
+  <ol class="conversation-transcript" data-chat-transcript aria-live="polite"><li class="empty-state">发送第一条消息，开始一个受治理的本地任务。</li></ol>
+  <form class="conversation-composer" data-chat-form>
+    <label for="chat-message">消息</label>
+    <textarea id="chat-message" name="message" maxlength="4096" required placeholder="告诉 Agent 下一步要做什么"></textarea>
+    <div class="conversation-composer__footer"><span class="raw-value" data-chat-error role="alert"></span><button class="button button--primary" type="submit">发送消息</button></div>
+  </form>
+</section>
 {% endblock %}
 {% block context %}
 <section class="context-card task-create-panel">
