@@ -120,6 +120,7 @@ def web(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     provider: Annotated[str, typer.Option()] = "mock",
     vault: Annotated[Path | None, typer.Option()] = None,
+    model: Annotated[str, typer.Option()] = "deepseek-chat",
 ) -> None:
     """Start the local-only Web UI for one fixed workspace."""
     try:
@@ -133,7 +134,7 @@ def web(
             selected_provider = OpenAICompatibleProvider(
                 endpoint=credential.endpoint,
                 api_key=credential.api_key,
-                model="deepseek-chat",
+                model=model,
             )
         elif provider != "mock":
             raise ValueError("provider must be 'mock' or 'openai-compatible'")

@@ -57,6 +57,11 @@ python -m guarded_agent run \
 python -m guarded_agent web \
   --workspace /absolute/path/to/trusted-project
 
+# DeepSeek 本地持续对话（启动时输入一次 vault 密码）
+python -m guarded_agent web \
+  --workspace /absolute/path/to/trusted-project \
+  --provider openai-compatible --model deepseek-chat
+
 # 记忆管理
 python -m guarded_agent memory add \
   --workspace /absolute/path/to/trusted-project \
