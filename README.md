@@ -163,6 +163,10 @@ tests/                 离线单元与集成测试
 docs/superpowers/      设计、计划与过程证据
 SPEC.md                产品与系统规约
 PLAN.md                实施计划与交付状态
+docs/superpowers/specs/2026-08-11-local-conversational-agent.md
+                       持续对话设计
+docs/superpowers/plans/2026-08-11-local-conversational-agent.md
+                       持续对话实施计划
 Makefile               测试、lint 与类型检查入口
 ```
 
@@ -179,7 +183,7 @@ Makefile               测试、lint 与类型检查入口
 - 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
 - 本地构建与 GitHub Actions artifact 仅产出未签名的 Linux x86_64 单文件二进制；不发布长期稳定的 Release 下载链接。
 - Python 3.13 及以上不在声明的支持范围；本地 Python 3.14 仅用于辅助验证且会跳过 ASGI Web 测试，正式测试和构建请使用 Python 3.12。
-- WebUI 中的任务固定使用 Mock provider（只读控制台），不会消耗真实 API Key；真实模型任务请通过 CLI `guarded-agent run --provider openai-compatible` 发起。
+- WebUI 默认使用 Mock provider；显式使用 `--provider openai-compatible` 时，启动阶段解锁一次 vault，持续对话消息由真实 provider 驱动，并仍经过现有治理、审批和审计流程。
 
 ## 许可证
 
