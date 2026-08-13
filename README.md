@@ -1,190 +1,199 @@
 # Guarded Agent
 
-## 项目简介
+Guarded Agent 是一个仅在本机运行的 Coding Agent Harness。LLM 只提出结构化动作；工作区边界、命令风险分类、人工审批、工具执行、测试反馈、审计和停机判断均由确定性代码完成。
 
-Guarded Agent 是一个治理优先、仅在本地运行的 Coding Agent Harness。LLM 只提出结构化动作；确定性代码负责工作区围栏、命令风险分类、一次性审批、工具执行、验证反馈、审计和停机判断。CLI 与本地 WebUI 共用同一个应用服务；默认 Mock provider 可离线演示，无需 API Key 或网络。
+它适合在**可信的本地代码仓库**中执行受控的修复任务。它不是操作系统级沙箱，不要对来源不明的项目运行。
 
-目标且受支持的源码运行时为 **Python 3.12.x**。项目不使用现成的 Agent 编排框架。
+## 1. 支持范围与前置条件
 
-## 安装
+- 源码运行时：Python **3.12.x**（不支持 3.13+）。
+- 二进制目标：未签名 Linux x86_64 单文件。
+- WebUI：只监听 `127.0.0.1`，不提供公网部署。
+- 默认 provider：Mock，无需网络和 API Key。
+- 真实 provider：OpenAI-compatible 接口，例如 DeepSeek；API Key 只进入加密 vault。
+- 需要 Git、Python 3.12 和一个可信工作区。若使用真实模型，还需要该 provider 的有效 API Key。
 
-当前可用的源码安装方式如下（在仓库根目录执行）：
+## 2. 从源码安装
+
+在仓库根目录执行：
 
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
+python -m guarded_agent --help
 ```
 
-此项目没有定义单独的 console-script 入口；安装后使用 `python -m guarded_agent`。可先确认命令面：
+每次打开新终端都要重新执行 `. .venv/bin/activate`。如果已经离开仓库目录，使用绝对路径调用模块，例如：
 
 ```bash
+/absolute/path/to/ai4se_agent/.venv/bin/python -m guarded_agent --help
+```
+
+项目没有单独的 console-script；下面所有 `python -m guarded_agent` 都指仓库虚拟环境中的 Python。
+
+## 3. 创建一个可运行的工作区
+
+Agent 只能使用工作区内的相对路径。先创建一个你信任的项目目录，并在其中声明允许的验收命令：
+
+```bash
+mkdir -p ~/guarded-demo
+cd ~/guarded-demo
+git init
+cat > guarded-agent.toml <<'TOML'
+[validation]
+commands = [["python", "-m", "pytest", "-q"]]
+TOML
+cat > test_smoke.py <<'PY'
+def test_smoke():
+    assert True
+PY
+```
+
+`[validation].commands` 必须是 argv 数组；Agent 只能从这里选择验证器，不接受任意 shell 字符串。首次运行时 `.guarded-agent/` 和 SQLite 状态库会自动创建。
+
+## 4. 离线演示与 CLI
+
+回到仓库根目录并激活虚拟环境：
+
+```bash
+cd /absolute/path/to/ai4se_agent
+. .venv/bin/activate
+
+# 三个确定性机制：危险动作拦截、失败反馈修正、审批参数篡改拦截
+python -m guarded_agent demo
+
+# 查看完整命令帮助
 python -m guarded_agent --help
-python -m guarded_agent credential --help
+python -m guarded_agent run --help
 python -m guarded_agent memory --help
 ```
 
-> **注意（venv 可见性）**：`guarded_agent` 只安装在本仓库的 `.venv` 中，不会装进系统 Python。下面所有 `python -m guarded_agent` 都要求在存在该 venv 的 shell 中执行（通常先 `. .venv/bin/activate`）。一旦 `cd` 到其他目录——例如凭据管理一节要求进入的私有目录——当前 shell 会丢失激活状态，直接运行 `python -m guarded_agent` 会落到系统解释器并报 `No module named guarded_agent`。此时改用 venv 解释器的绝对路径即可（把 `<repo>` 换成仓库实际路径），或在当前终端重新激活：
->
-> ```bash
-> <repo>/.venv/bin/python -m guarded_agent --help
-> source <repo>/.venv/bin/activate
-> ```
-
-## 运行
-
-先在受信任项目的根目录创建允许的验收命令；命令必须以 argv 数组写入配置，运行时只能从这里选择：
-
-```toml
-[validation]
-commands = [["python", "-m", "pytest", "-q"]]
-```
-
-以下命令均为当前 CLI 的实际子命令：
+使用 Mock provider 创建任务（Mock 只用于离线演示，不会完成真实修复）：
 
 ```bash
-# 离线机制演示：危险操作拦截、失败反馈修正、审批参数篡改拦截
-python -m guarded_agent demo
-
-# 创建一次任务。默认 provider 是 mock；真实模型需显式选择 provider。
 python -m guarded_agent run \
-  --workspace /absolute/path/to/trusted-project \
-  --goal '修复一个可验证的问题' \
+  --workspace "$HOME/guarded-demo" \
+  --goal '检查项目并修复一个可验证的问题' \
   --accept '["python", "-m", "pytest", "-q"]'
-
-# 仅本机 WebUI，默认端口为 8000；不得改为公网监听。
-python -m guarded_agent web \
-  --workspace /absolute/path/to/trusted-project
-
-# DeepSeek 本地持续对话（启动时输入一次 vault 密码）
-python -m guarded_agent web \
-  --workspace /absolute/path/to/trusted-project \
-  --provider openai-compatible --model deepseek-chat
-
-# 记忆管理
-python -m guarded_agent memory add \
-  --workspace /absolute/path/to/trusted-project \
-  --category convention --content '测试使用 pytest'
-python -m guarded_agent memory search \
-  --workspace /absolute/path/to/trusted-project --query pytest
-
-# 查看已安装版本
-python -m guarded_agent version
 ```
 
-WebUI 只允许绑定 `127.0.0.1`，访问地址为 `http://127.0.0.1:8000`。它固定在启动时给定的一个工作区；不接受主密码、任意 shell 输入或公网地址。页面提供任务、审批、记忆和设置组成的本地工作台；主题按钮按“跟随系统 → 浅色 → 深色”循环，并仅把该选择保存到浏览器本地存储。任务详情只轮询同源的本地状态 JSON，动态状态与时间线用文本节点更新，不接收或插入服务器返回的 HTML。
+记忆是按工作区隔离的：
 
-使用 `--provider openai-compatible` 启动 WebUI 时，服务启动阶段只解锁一次本地 vault；之后同一进程中的“持续对话”面板可以连续发送消息。每条消息仍会经过同一个 AgentLoop、治理策略、审批和审计流程。主密码不会保存，服务重启后需要再次输入；WebUI 仍只监听 `127.0.0.1`。
+```bash
+python -m guarded_agent memory add \
+  --workspace "$HOME/guarded-demo" \
+  --category convention \
+  --content '测试使用 pytest'
+python -m guarded_agent memory search \
+  --workspace "$HOME/guarded-demo" --query pytest
+```
 
-本次工作树的审计环境没有 Chromium、Playwright 或其他可用浏览器二进制，因此未生成 `docs/screenshots/webui-light.png` 或 `docs/screenshots/webui-dark.png`，也没有以占位图替代。需要截图时，可在具备浏览器的本地环境启动上述 WebUI 后，分别在 1440px 宽度的浅色和深色主题下捕获真实任务工作台画面。
+## 5. 启动本地 WebUI
 
-默认 Mock provider 不需要 API Key。`run` 的默认 Mock 脚本只用于安全的无模型路径；要让实际任务完成，应提供受支持的真实 provider，或运行固定的 `demo` 演示。
+### 5.1 Mock 模式（无需 API Key）
 
-## 配置
+在仓库根目录运行：
 
-工作区可选的 `guarded-agent.toml` 只支持 `[limits]` 与 `[validation]`。`[validation].commands` 是唯一可预授权的验证器列表。配置不能包含凭据，也不能降低路径围栏、敏感路径保护、命令分类或硬上限。
+```bash
+python -m guarded_agent web \
+  --workspace "$HOME/guarded-demo" \
+  --host 127.0.0.1 --port 8000
+```
 
-## 凭据管理
+然后用浏览器打开 <http://127.0.0.1:8000/>。页面包含任务工作台、持续对话面板、执行时间线、审批中心、记忆库和设置。按 `Ctrl+C` 停止服务。
 
-真实模型模式使用 `openai-compatible` provider。API Key 与主密码都在终端隐藏输入；主密码通过 Scrypt 派生密钥，API Key 以 AES-GCM 认证加密后写入本地 vault。默认 vault 路径是**执行命令时的当前目录**下的 `.guarded-agent/credentials.vault`，可用 `--vault` 指定其他受限权限的位置。
+### 5.2 DeepSeek 等真实 provider 的持续对话
 
-在目标机上，先进入仅自己可访问的目录，再录入凭据：
+先把 API Key 写入带主密码的加密 vault。推荐把 vault 放在仓库之外，并限制目录权限：
 
 ```bash
 mkdir -p ~/.local/share/guarded-agent
 chmod 700 ~/.local/share/guarded-agent
-cd ~/.local/share/guarded-agent
-python -m guarded_agent credential set --provider openai-compatible
-python -m guarded_agent credential status
-# 重复 set 即安全地更新 provider、endpoint 或 API Key（会重新加密写入）
-python -m guarded_agent credential set --provider openai-compatible
-python -m guarded_agent credential status --unlock
-python -m guarded_agent credential clear
+export GUARD_VAULT="$HOME/.local/share/guarded-agent/credentials.vault"
+
+python -m guarded_agent credential set \
+  --provider openai-compatible \
+  --endpoint https://api.deepseek.com/v1 \
+  --vault "$GUARD_VAULT"
+python -m guarded_agent credential status --vault "$GUARD_VAULT"
 ```
 
-> **提示**：上述命令先 `cd` 离开了仓库根目录，所以其中的 `python` 不会再指向项目 venv。请先按上一节说明激活 venv 或使用 venv 绝对路径调用，否则会报 `No module named guarded_agent`。
-
-`status` 只报告是否已配置；加 `--unlock` 后也只报告 provider 与 endpoint，**绝不回显 API Key 或主密码**。遗忘主密码无法恢复原凭据，只能 `clear` 后重新 `set`。真实 provider 运行时会在终端解锁 vault：
+`set` 会隐藏输入 API Key 和主密码；重复执行会安全更新；`status` 不回显密钥，`clear` 会删除 vault：
 
 ```bash
-python -m guarded_agent run \
-  --workspace /absolute/path/to/trusted-project \
-  --goal '修复一个可验证的问题' \
-  --provider openai-compatible
+python -m guarded_agent credential status --vault "$GUARD_VAULT" --unlock
+python -m guarded_agent credential clear --vault "$GUARD_VAULT"
 ```
 
-单文件二进制可将上述 `python -m guarded_agent` 前缀替换为 `./guarded-agent`。
-
-## 测试
-
-离线测试入口为：
+启动真实 provider WebUI：
 
 ```bash
-make test
+python -m guarded_agent web \
+  --workspace "$HOME/guarded-demo" \
+  --provider openai-compatible \
+  --model deepseek-chat \
+  --vault "$GUARD_VAULT" \
+  --host 127.0.0.1 --port 8000
 ```
 
-本工作树当前解释器为 Python 3.14 时，ASGI 传输相关 Web 测试会跳过，因为该组合会挂起；GitHub Actions 的 `unit-test` job 使用目标版本 Python 3.12 执行 `make test` 与 `make quality`。托管结果以仓库的 **Actions** 页面或 Pull Request 的 **Checks** 区域为准，本地验证不能替代 hosted CI pass 记录。仓库同时保留 `.gitlab-ci.yml` 兼容课程原始检查。
+服务启动时只输入一次 vault 主密码。之后可在页面持续发送多条消息；每条消息都会经过同一个 AgentLoop、治理、审批、工具执行和审计流程。服务停止后密钥不会留在进程中，下次启动需要再次解锁。不要把 API Key 放进命令行参数、配置文件、Git、日志或 shell 历史。
 
-## 机制演示
+如果 provider 不是 DeepSeek，只需在 `credential set` 时填写其 OpenAI-compatible endpoint，并在 WebUI 使用对应模型名。
 
-`python -m guarded_agent demo` 在临时工作区和 Mock LLM 中确定性展示三条机制：敏感文件删除被治理拒绝；一次错误修改收到测试失败反馈后被修正；已审批动作的参数被篡改后不会执行。该命令不需要网络或 API Key。
+## 6. 凭据安全边界
 
-## 分发
+vault 使用主密码派生密钥，并以 AES-GCM 加密 API Key；文件权限应保持为仅当前用户可读。项目不会提供明文查看功能，忘记主密码无法恢复，只能清除后重新录入。真实 API Key 会进入输出脱敏器，子进程环境不会继承它。凭据安全不能替代对恶意项目脚本的隔离，因此只对可信仓库运行。
 
-课程目标分发物是未签名的 **Linux x86_64** PyInstaller 单文件可执行程序 `guarded-agent`。目标机取得该文件后，首次执行前需要授予执行权限：
+## 7. 测试、质量检查与机制演示
 
 ```bash
-chmod +x guarded-agent
-./guarded-agent version
-./guarded-agent demo
-./guarded-agent web --workspace /absolute/path/to/trusted-project
+make test       # pytest
+make quality    # Ruff + mypy
+make check      # test + quality
+python -m guarded_agent demo
 ```
 
-在 Linux x86_64 上从源码本地构建时，先安装包含 PyInstaller 的构建依赖，再运行检查进仓库的构建入口：
+核心机制测试使用 Stub/Mock LLM，不依赖网络或真实 API。Python 3.12 是正式测试环境；本机 Python 3.14 下部分 ASGI 测试会跳过，GitHub Actions 使用 Python 3.12 执行完整测试。
+
+## 8. 单文件二进制
+
+GitHub Actions 的 `build-binary` 会构建并上传 `guarded-agent-linux-x86_64` artifact；在仓库 Actions 页面打开成功的 CI run 即可下载。artifact 受 GitHub 保留期限制，不是长期 Release。
+
+在 Linux x86_64 本地构建：
 
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e '.[build]'
 make binary
+chmod +x dist/guarded-agent
 ./dist/guarded-agent version
 ./dist/guarded-agent demo
+./dist/guarded-agent web --workspace "$HOME/guarded-demo" --host 127.0.0.1
 ```
 
-成功后产物为 `dist/guarded-agent`。GitHub Actions 的 `build-binary` job 会用 Python 3.12 构建、运行 `version` 与 `demo`，再上传名为 `guarded-agent-linux-x86_64` 的 artifact。获取方式：打开 GitHub 仓库的 **Actions** 页面，进入一次成功的 **CI** workflow，在页面底部 **Artifacts** 下载；artifact 只在 workflow 成功且尚未超过 GitHub 保留期时可用。当前不提供 Docker、PyPI 包、macOS/Windows 构建或公网部署 URL；这是经用户确认的课程要求偏离，已记录在 `SPEC_PROCESS.md`。
+目标机首次执行下载的文件前运行 `chmod +x guarded-agent`。二进制未签名，Linux 可能显示来源或执行权限警告；确认文件来源后再允许运行。当前不提供 Docker、PyPI、macOS、Windows 或公网服务。
 
-## 目录结构
+## 9. CI 与项目结构
+
+每次 push 和 Pull Request 都触发 `.github/workflows/ci.yml`，其中包含 `unit-test` 和 `build-binary`；仓库也保留课程要求的 `.gitlab-ci.yml`，其中同样有名为 `unit-test` 的 job。
 
 ```text
-src/guarded_agent/     Harness、CLI、WebUI、治理、工具、存储与 provider
-tests/                 离线单元与集成测试
-docs/superpowers/      设计、计划与过程证据
+src/guarded_agent/     Harness 内核、CLI、WebUI、治理、工具、存储、provider
+tests/                 离线单元测试和 WebUI 测试
+docs/superpowers/      设计与实施计划
 SPEC.md                产品与系统规约
-PLAN.md                实施计划与交付状态
-docs/superpowers/specs/2026-08-11-local-conversational-agent.md
-                       持续对话设计
-docs/superpowers/plans/2026-08-11-local-conversational-agent.md
-                       持续对话实施计划
-Makefile               测试、lint 与类型检查入口
+PLAN.md                任务和验证记录
+SPEC_PROCESS.md        brainstorming、冷启动审计和取舍
+AGENT_LOG.md           时间顺序的过程证据
+REFLECTION.md          学生本人反思报告
 ```
 
-## 安全边界
+## 10. 限制与许可证
 
-只对**可信仓库**运行本工具。它是应用层护栏，**不是 OS 级强沙箱**；项目中的测试、构建脚本或依赖安装仍可能执行恶意代码。
-
-核心边界包括：路径必须是工作区内的相对 POSIX 路径，真实路径与符号链接不得逃逸；普通文件工具拒绝 `.git`、`.env*`、私钥和 vault 路径；命令以 argv 直接执行、不使用 shell；高风险操作须绑定到规范化动作摘要并只可审批/消费一次；硬禁令（如提权、危险 Git 操作）不可审批。命令输出与审计会脱敏，子进程不继承 API Key。
-
-## 已知限制
-
-- 不支持并发任务、多用户协作、公网 WebUI、远程部署或从中途子进程恢复。
-- 不支持不可信/恶意项目，也不能替代容器、虚拟机或操作系统隔离。
-- 目标二进制仅为 Linux x86_64，且未签名；其他平台及 CPU 架构不在支持范围内。
-- 本地构建与 GitHub Actions artifact 仅产出未签名的 Linux x86_64 单文件二进制；不发布长期稳定的 Release 下载链接。
-- Python 3.13 及以上不在声明的支持范围；本地 Python 3.14 仅用于辅助验证且会跳过 ASGI Web 测试，正式测试和构建请使用 Python 3.12。
-- WebUI 默认使用 Mock provider；显式使用 `--provider openai-compatible` 时，启动阶段解锁一次 vault，持续对话消息由真实 provider 驱动，并仍经过现有治理、审批和审计流程。
-
-## 许可证
-
-本项目采用 [MIT License](LICENSE)。直接运行、开发和构建依赖的许可证及核对范围见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；发布二进制前仍应对最终锁定的完整传递依赖做一次许可证清单复核。
+- 只绑定本机 `127.0.0.1`，不支持公网部署、多用户或并发任务。
+- 这是应用级治理，不是 OS/容器级沙箱；不要对不可信仓库运行。
+- 二进制仅支持 Linux x86_64，且未签名。
+- 使用第三方依赖时遵循其许可证，清单见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。本项目代码采用 [MIT License](LICENSE)。

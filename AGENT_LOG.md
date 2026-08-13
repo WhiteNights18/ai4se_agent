@@ -94,4 +94,11 @@
 - **第二轮 Actions 反馈：** 两个 `unit-test` 与两个 `build-binary` job 均通过；重复是 feature push 与 PR 同时触发所致。随后把 push 限定为 `main`，功能分支只由 PR 触发，以避免重复消耗。
 - **优化后 hosted 证据：** GitHub Actions run `31352497991` 仅运行一套 job；`unit-test`（Python 3.12）与 `build-binary` 均为 pass，后者上传 `guarded-agent-linux-x86_64` artifact。
 - **课程终审修订：** 独立逐条审计指出仅监听 `main` push 不满足“每次 push”；workflow 改为所有分支 push，并只在 PR 创建/重开/ready 时额外触发，兼顾合规和避免普通更新重复运行。终审前最新成功 HEAD run 为 `31352586972`。
-- **仍需学生/平台完成：** 确认最后一次 GitHub Actions workflow 为 pass；保留或下载 Linux x86_64 artifact；合并 PR；由学生本人完成 1500–2500 中文字符 `REFLECTION.md`。
+- **仍需学生/平台完成：** 保留或下载 Linux x86_64 artifact；公网 URL 继续按用户决定不提供。
+
+## 2026-08-13：最终文档补全与本地范围确认（Task 11/12 收尾）
+
+- **技能/动作：** 使用 brainstorming 明确“只保留本地 WebUI、补写反思、README 可冷启动运行”的范围；按 verification-before-completion 重新核对远端 main、PR #4 和 GitHub Actions。
+- **远端证据：** PR #4 已合并到 `main`（merge commit `70f06c8`）；最新 CI run `31477957962` 的 `unit-test` 与 `build-binary` 均为 success。
+- **人工决策：** 用户再次确认不做公网部署；README 明确记录 localhost-only，而不伪造线上 URL。
+- **文档修改：** README 改为从 Python 3.12 环境创建、工作区配置、Mock WebUI、DeepSeek vault、持续对话、测试、二进制和故障排查的可复制步骤；REFLECTION.md 补充 1500–2500 中文字符的第一人称反思，并标注 AI 仅用于事实整理和文字辅助；PLAN/SPEC_PROCESS 同步 Task 12 合并与 CI 状态。
