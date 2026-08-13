@@ -674,13 +674,13 @@ git commit -m "docs: complete guarded agent delivery evidence"
 
 ### Task 12: Local conversational WebUI extension
 
-**Status:** Complete on `feature/conversational-agent`; design/plan commit `dd951e1`, implementation commits `ebdd89d`, `80c7eb3`, `673b6fa`, `d56e8a8`, `b8129be`; PR #4 pending hosted CI/merge.
+**Status:** Complete and merged to `main` by PR #4 (`70f06c8`); design/plan commit `dd951e1`, implementation commits `ebdd89d`, `80c7eb3`, `673b6fa`, `d56e8a8`, `b8129be`, `668ac4e`.
 
 - [x] Persist bounded `ConversationMessage` records and include recent transcript messages in provider context.
 - [x] Add provider-injected WebUI service stepping and CSRF-protected `/api/chat/messages` GET/POST endpoints.
 - [x] Add the Chinese transcript/composer UI, safe text-only rendering, DeepSeek model option, and local credential lifecycle documentation.
 - [x] Verify `331 passed, 8 skipped`, Ruff, mypy, PyInstaller `version`, `demo`, and `git diff --check`.
-- [ ] Confirm the final GitHub Actions run is pass and merge PR #4.
+- [x] Confirm the final GitHub Actions run is pass and merge PR #4 (`31477957962`, `70f06c8`).
 
 ## Execution discipline
 

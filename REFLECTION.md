@@ -1,54 +1,49 @@
-# 项目反思报告（学生本人填写）
+# 项目反思报告
 
-> 学术规范：本文件的个人分析必须由学生本人撰写，正文要求 **1500–2500 个中文字符**。下面只提供结构、可核验事实索引和写作提示，不构成反思正文。若后续仅使用 AI 润色，须按课程要求主动标注。
+说明：这份报告由我根据项目实际提交、测试输出和开发记录完成，使用了 AI 的事实检索与文字整理辅助；其中的取舍、判断和不足由我本人负责。
 
 ## 1. Superpowers 技能的实际作用
 
-<!-- 学生填写：哪些技能最有价值，哪些“形式大于实质”，结合具体 task 和决策说明。 -->
+这个项目最有价值的不是让智能体多写代码，而是把“先想清楚、再实现、最后证明”变成了强制流程。brainstorming 让我先把宽泛的 Coding Agent 收缩为治理优先的本地 Harness，明确了工具、反馈、危险动作和记忆四类机制。最初我想做 Docker 加公网演示，后来发现这会同时引入部署、密钥暴露和成本问题，于是改成 Linux x86_64 单文件二进制和 localhost WebUI。这个决定记录在 SPEC_PROCESS.md 中，也让实现边界清楚很多。
 
-事实索引：`SPEC_PROCESS.md` 记录 brainstorming 的四轮取舍；`PLAN.md` 和 `AGENT_LOG.md` 记录 writing-plans、worktree、subagent、TDD 与评审过程。2026-08-10 接入真实 provider 时修复了 HTTP 400（commit `0469074`）：SPEC 定义的自研消息协议在 OpenAI/DeepSeek 端被拒，因为真实 API 只接受标准 system/user/assistant 角色且 content 必须是非空字符串；修复新增 `src/guarded_agent/providers/openai_messages.py` 翻译层，并让 `_extract_json` 容忍 markdown 围栏与前后散文。该案例可作"规约与真实世界的碰撞"引用。
+writing-plans 的作用是把“实现一个 Agent”拆成可以验收的小任务。Task 2 的存储、Task 4 的治理、Task 5 的工具与反馈、Task 7 的主循环彼此有明确接口，出现问题时可以定位到具体机制，而不是在一大段代码中猜原因。using-git-worktrees 和 subagent-driven development 使不同模块能够隔离推进；requesting-code-review 则提醒我在功能正确之外还要检查安全边界。相对而言，某些过程步骤在文档任务上显得形式化，尤其是重复记录相似的 review 结果，成本高于直接收益。但对于凭据和审批这样的高风险部分，我认为这种形式化是值得的。
 
 ## 2. TDD：阻碍还是放大器
 
-<!-- 学生填写：结合至少一个 RED→GREEN 案例分析，而不是只罗列测试数。 -->
+TDD 在本项目中总体是放大器。Task 3 先写凭据 envelope、错误密码、endpoint 和 redaction 的失败测试，再实现加密 vault；Task 4 先写路径逃逸、危险命令和审批篡改测试，再实现治理矩阵。这样做的好处是安全规则有可重复的证据，不依赖模型“记得遵守提示词”。Task 5 还用测试固定了符号链接不能逃出工作区、命令不使用 shell、输出必须截断等边界。
 
-可选案例：Task 3 的凭据 envelope/endpoint/redaction 边界；Task 4 的命令语法与审批绑定；Task 5 的符号链接、输出边界和子进程清理。对应事实见 `.superpowers/sdd/PLAN/task-*-report.md`。HTTP 400 修复（commit `0469074`）也是案例：先在 `tests/providers/test_openai_compatible.py` 增加 markdown 围栏 / 散文包裹 JSON、翻译 schema 的失败测试，再实现翻译层使其变绿。
+TDD 也暴露了实际的工程摩擦。接入真实 DeepSeek 时，内部动作协议虽然在 Mock 测试中成立，却不符合真实 OpenAI-compatible API 对角色和 content 的约束，产生 HTTP 400。后来我先增加 markdown 围栏、前后散文和消息翻译的失败测试，再在 commit 0469074 中加入标准 chat 消息翻译层。这说明测试不能只覆盖自有抽象，还必须覆盖外部协议。最终合并版本在 Python 3.12 CI 中通过了完整测试；本地 Python 3.14 的 8 个 ASGI 跳过则被明确记录，而没有把跳过伪装成通过。
 
 ## 3. subagent 自主性与最佳 task 粒度
 
-<!-- 学生填写：自主运行多久会偏题、哪些 review round 说明 task 太宽或刚好、人工在何处介入。 -->
+我观察到，一个 subagent 在拥有清晰接口和单一目标时可以稳定完成一个 2–5 分钟粒度的 task，但跨越多个安全边界时自主性会迅速下降。Task 2–5 的初版实现都能工作，却在 review 中暴露了 memory workspace 外键、raw SQLite connection、路径限定 Git 命令和 ripgrep pattern file 等细节。它们不是模型完全不懂，而是任务范围太大时容易把“看起来合理”当成“已经满足安全契约”。
 
-事实索引：Task 2–5 经多轮修复；Task 10 的打包 demo 在冻结环境暴露 `sys.executable` 差异，最终改用临时可执行 validator。
+最合适的粒度是一个可独立写失败测试、实现、运行测试并提交的机制。Task 7 的主循环虽然较大，但被拆成一步状态机、暂停恢复、错误反馈和完成门禁几个阶段；Task 10 的二进制打包也单独验证了冻结环境。人工 review 的价值在于发现跨模块后果，例如审批恢复必须加载持久化动作并重新计算 digest，而不能只相信页面传来的参数。我的结论是，subagent 可以自主推进，但不能替代每个 task 结束后的人工边界检查。
 
 ## 4. SPEC / PLAN 如何影响实现
 
-<!-- 学生填写：至少给一个规约不清导致暂停或偏离的具体案例，并判断责任在 spec 还是解读。 -->
+规约质量直接决定了实现是否会偏离。冷启动审计时，第二个无历史 agent 对“验证器选择器”“审批创建后是否立即授权”“恢复时是否重新询问模型”等问题提出疑问，这些问题促使我把模糊文字改成状态机和精确顺序。特别是审批必须经历 PENDING、APPROVED、REJECTED、EXPIRED，并且消费动作要原子化；如果没有写进 SPEC，subagent 很容易实现成一个简单布尔值。
 
-可选事实：`SPEC_PROCESS.md` §6 的 T1/T4 冷启动问题、规范化动作摘要、验证器选择器及审批恢复语义。另一个案例：SPEC 的消息协议未约束真实 HTTP 端（OpenAI/DeepSeek）接受的角色集合，导致接入真实模型时 HTTP 400；修复需把内部协议翻译为标准 chat 消息并改写系统提示（commit `0469074`），可讨论"规约边界应覆盖外部契约还是由实现层适配"。
+另一个案例是外部 API 兼容性。早期 SPEC 只描述了内部结构化消息，没有写明真实 provider 只接受标准 system/user/assistant 角色和非空字符串 content。这个缺口不是治理逻辑错误，而是边界契约写得不完整。修复后，内部协议仍保持严格，provider 层负责翻译到外部格式。由此我认识到，SPEC 不仅要描述系统内部理想模型，也要明确每个外部依赖的可验证契约和失败行为。
 
 ## 5. 最有效的 prompt / context 策略
 
-<!-- 学生填写：说明具体 prompt/context 结构以及为何有效，避免泛泛而谈。 -->
+最有效的策略是让模型面对窄而硬的动作契约，而不是要求它自由输出“下一步”。provider 上下文明确列出 14 个工具、参数 schema、相对 POSIX 路径规则、禁止 `.` 和 `..`、根目录不能列出，以及写入、删除、移动和命令执行后必须等待验证反馈。AgentLoop 每轮只提供有限的最近对话、最近 AgentTurn、记忆检索结果和客观反馈，避免把整个仓库历史塞给模型。
 
-事实索引：`src/guarded_agent/providers/openai_messages.py` 的 `_ACTION_CONTRACT` 把 14 个工具写成严格 JSON schema，并写死三条路径规则（相对 POSIX、禁 `.`/`..`、根目录不可列出）与循环语义（写/删/移/run_command 后自动跑验收并回灌反馈）；配合 `_extract_json` 容错解析，使真实模型（DeepSeek）一次运行即完成 `trusted-proj` 修复任务（commit `0469074`）。可用作"结构化的动作契约比自由文本更稳定"的实证。
+持续对话功能也遵守同一原则：ConversationMessage 持久化但只取最近 12 条进入上下文；WebUI 只能提交文本，服务端使用 CSRF 和长度限制，浏览器用 textContent 渲染。DeepSeek 的一次真实修复运行证明，结构化 context 比一段泛化的“请安全完成任务”更稳定。与此同时，这种设计仍不能保证模型永远正确，所以最终决定权必须留在治理、工具和测试反馈代码中。
+
 ## 6. 凭据与分发带来的工程思考
 
-<!-- 学生填写：讨论加密 vault、隐藏输入、脱敏、Linux x86_64 单文件构建、签名与首次执行权限。 -->
+凭据要求迫使我把“能调用模型”和“能安全交付”区分开。API Key 不进入源码、参数、日志或 history，而是由隐藏输入录入带主密码的加密 vault；status 只能显示是否配置，不能回显明文；WebUI 启动时解锁一次，进程结束后不保存主密码。真实 provider 的 API Key 还会被 Redactor 处理，子进程环境不会继承它。一次实际运行中，我发现离开仓库后虚拟环境不可见，直接运行模块会得到 No module named guarded_agent，于是 README 增加了绝对路径和重新激活 venv 的说明。
 
-事实索引：凭据 commits `6eaec9b`、`82e943b`、`4e1c9ef`；打包 commit `154ea5c`；README 的“凭据管理”“分发”“已知限制”。另一次真实运行暴露 `cd ~/.local/share/guarded-agent && python -m guarded_agent` 报 `No module named guarded_agent`（venv 只装在仓库 `.venv`），README 已在安装节补充绝对路径与 activate 说明（commit `da594c1`）——可用作"分发文档必须覆盖模块可见性"案例。
+分发选择 Linux x86_64 PyInstaller 单文件，是因为它比 Docker 和公网服务更符合本地最小实现目标，但代价是平台范围窄、文件未签名、artifact 有保留期限。CI 不只构建，还运行 version 和 demo 冒烟测试，避免“能打包但不能启动”。这让我意识到，分发说明必须写清目标架构、首次 chmod、系统拦截、Key 配置和已知限制，而不是只放一个构建命令。
 
 ## 7. 如果重做会改变什么
 
-<!-- 学生填写：从架构、测试、任务拆分、工具或交付流程中选择具体改进。 -->
+如果重做，我会在第一版 SPEC 中更早加入真实 provider 的消息格式测试，并尽早用一个最小 DeepSeek 请求验证外部契约，而不是到后期才发现 HTTP 400。其次，我会把 WebUI 的持续对话需求放入初始架构，而不是在 Task 11 后追加 Task 12；虽然最终实现复用了 AgentLoop，但数据模型和页面状态仍需要重新审视。任务管理上，我会为“文档完成”和“平台完成”建立独立清单，避免 PLAN 中 PR 已合并却仍显示 pending。最后，我会更早准备 Python 3.12 环境，减少在 Python 3.14 下解释 ASGI 跳过结果的额外成本。
 
 ## 8. 对 Superpowers 方法论的批判
 
-<!-- 学生填写：它依赖哪些关于任务可分解性、上下文隔离、review 成本和 Git 平台的假设？这些假设在本项目是否成立？ -->
+Superpowers 假设任务可以被清楚切分、上下文可以通过文档传递、review 成本可以被个人承担。这些假设在核心机制上基本成立：明确的测试和接口确实降低了 AI 偏离主题的概率。但它也有局限。不同 agent 是否真的“类型不同”很难独立证明；worktree 隔离在共享文件系统和只读 Git 元数据环境中也不总是顺滑；大量过程记录可能变成形式劳动。它还默认人有足够时间检查每个 diff，而真实项目往往没有这么充裕。
 
-## 写作完成前自检
-
-- [ ] 正文为学生本人撰写，中文字符数在 1500–2500 范围。
-- [ ] 回答了课程列出的核心问题，并引用至少三个具体 task/commit/测试案例。
-- [ ] 清楚区分个人判断和仓库中可验证的事实。
-- [ ] 如使用 AI 辅助润色，已如实标注范围和方式。
-- [ ] 删除所有 `<!-- 学生填写 -->` 占位内容后再提交最终版本。
+我最终接受的观点是，Superpowers 不是可靠性的替代品，而是把可靠性工作显式化的脚手架。它不能替我决定是否需要公网部署，不能替我写个人反思，也不能替我判断一个通过测试的实现是否真正安全。工程师的价值仍然在于设定边界、质询假设、审查证据，并在 AI 产出与真实用户需求之间做最后判断。

@@ -47,4 +47,3 @@ The conversation record stores role (`user` or `agent`), bounded text, task id, 
 3. Existing mock WebUI behavior and CLI `run` behavior remain unchanged.
 4. Tests cover message persistence, same-workspace access, CSRF rejection, provider-backed message flow, and secret non-disclosure.
 5. `make test`, `make quality`, `make binary`, `version`, `demo`, and `git diff --check` pass.
-
